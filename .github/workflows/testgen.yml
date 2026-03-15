@@ -49,26 +49,26 @@ jobs:
         run: |
           try {
             $response = Invoke-RestMethod -Uri "http://localhost:11434/v1/models" -Method Get
-            Write-Host "✅ Ollama доступна. Модели: $($response.data.id -join ', ')"
+            Write-Host "Ollama available. Models: $($response.data.id -join ', ')"
           } catch {
-            Write-Host "⚠️ Ollama не запущена!"
+            Write-Host "Ollama not running!"
           }
 
       - name: Run testgen-agent
         id: generate
         shell: pwsh
-        continue-on-error: true
         run: |
           ./testgen-agent.exe --repo . --base "origin/${{ github.base_ref }}" --api-url http://localhost:11434/v1 --model qwen3-coder:30b
 
       - name: Show generated tests
+        if: always()
         shell: pwsh
         run: |
           git diff --name-only
           git diff --stat
 
       - name: Commit generated tests
-        if: steps.generate.outcome == 'success'
+        if: success()
         shell: pwsh
         run: |
           git config user.name "testgen-agent[bot]"
@@ -78,16 +78,17 @@ jobs:
 
           $staged = git diff --cached --quiet 2>&1
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "ℹ️ Нет новых тестов для коммита"
+            Write-Host "No new tests to commit"
           } else {
-            git commit -m "🤖 testgen-agent: auto-generated tests"
+            git commit -m "testgen-agent: auto-generated tests"
             git push
-            Write-Host "✅ Тесты закоммичены и запушены"
+            Write-Host "Tests committed and pushed"
           }
 
       - name: Report failure
-        if: steps.generate.outcome == 'failure'
+        if: failure()
         shell: pwsh
         run: |
-          Write-Host "⚠️ Тесты сгенерированы, но не прошли валидацию. Коммит не выполнен."
-          Write-Host "Проверьте логи шага 'Run testgen-agent' для деталей."
+          Write-Host "Test generation failed."
+          Write-Host "Invalid tests were NOT committed."
+          Write-Host "Check 'Run testgen-agent' step logs for details."

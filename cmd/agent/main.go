@@ -62,6 +62,7 @@ func main() {
 
 	fmt.Printf("📝 Изменено файлов: %d\n\n", len(files))
 
+	totalAttempted := 0
 	totalGenerated := 0
 	totalValidated := 0
 
@@ -95,6 +96,7 @@ func main() {
 		for _, fn := range affectedFuncs {
 			fmt.Printf("        • %s  (строки %d–%d)\n", fn.Signature, fn.StartLine, fn.EndLine)
 		}
+		totalAttempted++
 
 		// Проверяем, есть ли уже тесты
 		existingTests := readExistingTests(fullPath)
@@ -197,13 +199,18 @@ func main() {
 
 			if attempt == maxRetries {
 				fmt.Printf("     ⛔ Превышено максимальное количество попыток (%d)\n", maxRetries)
-				fmt.Printf("     💾 Последняя версия сохранена: %s (требует ручной правки)\n\n", testFilePath)
-				totalGenerated++
 			}
 		}
 
-		if !success && generatedCode == "" {
-			fmt.Printf("     ❌ Не удалось сгенерировать тесты\n\n")
+		// Если валидация не прошла — удаляем невалидный файл с диска,
+		// чтобы он не попал в коммит.
+		if !success {
+			if generatedCode != "" {
+				os.Remove(testFilePath)
+				fmt.Printf("     🗑️  Невалидный файл удалён: %s\n\n", testFilePath)
+			} else {
+				fmt.Printf("     ❌ Не удалось сгенерировать тесты\n\n")
+			}
 		}
 	}
 
@@ -211,10 +218,14 @@ func main() {
 	fmt.Println("═══════════════════════════════════")
 	fmt.Printf("📊 Итого: сгенерировано %d, валидировано %d\n", totalGenerated, totalValidated)
 
-	// Выходим с кодом 0 только если все тесты прошли валидацию
-	// или не было файлов для генерации
-	if totalGenerated > 0 && totalValidated == 0 {
-		os.Exit(2) // Все тесты невалидны
+	// Выходим с кодом ошибки если были попытки генерации,
+	// но ни один файл не прошёл валидацию.
+	if totalAttempted > 0 && totalValidated == 0 {
+		os.Exit(2)
+	}
+	// Частичный успех — часть файлов валидна, часть нет.
+	if totalGenerated > totalValidated {
+		os.Exit(1)
 	}
 }
 
