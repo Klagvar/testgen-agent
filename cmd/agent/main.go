@@ -14,6 +14,7 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/cache"
 	"github.com/gizatulin/testgen-agent/internal/coverage"
 	"github.com/gizatulin/testgen-agent/internal/diff"
+	"github.com/gizatulin/testgen-agent/internal/gitdiff"
 	ghub "github.com/gizatulin/testgen-agent/internal/github"
 	"github.com/gizatulin/testgen-agent/internal/llm"
 	"github.com/gizatulin/testgen-agent/internal/merger"
@@ -46,6 +47,7 @@ func main() {
 	prNumber := flag.Int("pr-number", 0, "Pull request number for comment")
 	mutationTest := flag.Bool("mutation", false, "Run mutation testing after test generation")
 	noCache := flag.Bool("no-cache", false, "Disable function-level caching")
+	noSmartDiff := flag.Bool("no-smart-diff", false, "Disable git-based function comparison")
 
 	flag.Parse()
 
@@ -205,6 +207,46 @@ func main() {
 			}
 
 			affectedFuncs = uncachedFuncs
+		}
+
+		// ─── Git-based comparison: skip functions with unchanged body ───
+		if !*noSmartDiff && len(affectedFuncs) > 0 {
+			cmpResult, cmpErr := gitdiff.FilterChanged(affectedFuncs, *repoPath, *baseBranch, f.NewPath)
+			if cmpErr != nil {
+				fmt.Printf("     ⚠️  Git compare: %v (processing all functions)\n", cmpErr)
+			} else {
+				if len(cmpResult.Unchanged) > 0 {
+					names := make([]string, len(cmpResult.Unchanged))
+					for i, fn := range cmpResult.Unchanged {
+						names[i] = fn.Name
+					}
+					fmt.Printf("     🔄 Unchanged vs base: %s (skipped)\n", strings.Join(names, ", "))
+				}
+				if len(cmpResult.New) > 0 {
+					names := make([]string, len(cmpResult.New))
+					for i, fn := range cmpResult.New {
+						names[i] = fn.Name
+					}
+					fmt.Printf("     🆕 New functions: %s\n", strings.Join(names, ", "))
+				}
+
+				// Keep only changed + new functions
+				var needGeneration []analyzer.FuncInfo
+				needGeneration = append(needGeneration, cmpResult.Changed...)
+				needGeneration = append(needGeneration, cmpResult.New...)
+
+				if len(needGeneration) == 0 {
+					fmt.Printf("     ✅ All functions unchanged vs base — skipping LLM\n\n")
+					continue
+				}
+
+				if len(needGeneration) < len(affectedFuncs) {
+					fmt.Printf("     📝 %d/%d functions actually changed\n",
+						len(needGeneration), len(affectedFuncs))
+				}
+
+				affectedFuncs = needGeneration
+			}
 		}
 
 		// Check for existing tests
