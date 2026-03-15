@@ -13,6 +13,9 @@ testgen-agent
 cover.out
 *.coverprofile
 
+# Agent cache
+.testgen-cache.json
+
 # Go workspace
 go.sum
 

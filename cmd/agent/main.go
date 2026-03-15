@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
+	"github.com/gizatulin/testgen-agent/internal/cache"
 	"github.com/gizatulin/testgen-agent/internal/coverage"
 	"github.com/gizatulin/testgen-agent/internal/diff"
 	ghub "github.com/gizatulin/testgen-agent/internal/github"
@@ -44,6 +45,7 @@ func main() {
 	ghRepo := flag.String("github-repo", "", "GitHub repo (owner/repo)")
 	prNumber := flag.Int("pr-number", 0, "Pull request number for comment")
 	mutationTest := flag.Bool("mutation", false, "Run mutation testing after test generation")
+	noCache := flag.Bool("no-cache", false, "Disable function-level caching")
 
 	flag.Parse()
 
@@ -82,9 +84,20 @@ func main() {
 	totalAttempted := 0
 	totalGenerated := 0
 	totalValidated := 0
+	totalCached := 0
 	startTime := time.Now()
 
 	var fileReports []ghub.FileReport
+
+	// Load function-level cache
+	var fnCache *cache.Cache
+	if !*noCache {
+		fnCache = cache.Load(*repoPath)
+		total, _ := fnCache.Stats()
+		if total > 0 {
+			fmt.Printf("📦 Cache loaded: %d entries\n\n", total)
+		}
+	}
 
 	// ─── Step 3: For each .go file — AST analysis + test generation ───
 	for _, f := range files {
@@ -163,6 +176,35 @@ func main() {
 				}
 				fmt.Printf("     🔗 Dependencies: %s\n", strings.Join(funcNames, ", "))
 			}
+		}
+
+		// ─── Cache check: skip functions with matching hash ───
+		if fnCache != nil {
+			var uncachedFuncs []analyzer.FuncInfo
+			for _, fn := range affectedFuncs {
+				key := cache.Key(f.NewPath, fn.Name)
+				hash := cache.ComputeHash(fn, usedTypes)
+
+				if entry, hit := fnCache.Lookup(key, hash); hit {
+					fmt.Printf("     ♻️  Cached: %s (tests: %s, model: %s)\n",
+						fn.Name, strings.Join(entry.GeneratedFuncs, ", "), entry.Model)
+					totalCached++
+				} else {
+					uncachedFuncs = append(uncachedFuncs, fn)
+				}
+			}
+
+			if len(uncachedFuncs) == 0 {
+				fmt.Printf("     ✅ All functions cached — skipping LLM call\n\n")
+				continue
+			}
+
+			if len(uncachedFuncs) < len(affectedFuncs) {
+				fmt.Printf("     📝 %d/%d functions need generation\n",
+					len(uncachedFuncs), len(affectedFuncs))
+			}
+
+			affectedFuncs = uncachedFuncs
 		}
 
 		// Check for existing tests
@@ -276,6 +318,7 @@ func main() {
 				totalGenerated++
 				totalValidated++
 				success = true
+				updateCache(fnCache, f.NewPath, affectedFuncs, usedTypes, testFilePath, cfg.Model)
 				break
 			}
 
@@ -325,6 +368,7 @@ func main() {
 							totalGenerated++
 							totalValidated++
 							success = true
+							updateCache(fnCache, f.NewPath, affectedFuncs, usedTypes, testFilePath, cfg.Model)
 						} else {
 							fmt.Printf("     ⚠️  Pruned tests still fail: %s\n", valResult.Summary())
 							os.Remove(testFilePath)
@@ -405,9 +449,23 @@ func main() {
 		})
 	}
 
+	// ─── Save cache ───
+	if fnCache != nil {
+		if err := fnCache.Save(); err != nil {
+			fmt.Printf("⚠️  Cannot save cache: %v\n", err)
+		} else {
+			total, _ := fnCache.Stats()
+			fmt.Printf("📦 Cache saved: %d entries\n", total)
+		}
+	}
+
 	// Summary
 	fmt.Println("═══════════════════════════════════")
-	fmt.Printf("📊 Total: generated %d, validated %d\n", totalGenerated, totalValidated)
+	fmt.Printf("📊 Total: generated %d, validated %d", totalGenerated, totalValidated)
+	if totalCached > 0 {
+		fmt.Printf(", cached %d", totalCached)
+	}
+	fmt.Println()
 
 	// ─── Post PR Comment ───
 	ghTokenVal := resolveEnv(*ghToken, "GITHUB_TOKEN")
@@ -680,6 +738,26 @@ func buildTestFilePath(goFilePath, outDir string) string {
 	}
 
 	return filepath.Join(filepath.Dir(goFilePath), testFileName)
+}
+
+// updateCache обновляет кэш для успешно сгенерированных функций.
+func updateCache(fnCache *cache.Cache, filePath string, funcs []analyzer.FuncInfo, usedTypes []analyzer.TypeInfo, testFile string, model string) {
+	if fnCache == nil {
+		return
+	}
+
+	for _, fn := range funcs {
+		key := cache.Key(filePath, fn.Name)
+		hash := cache.ComputeHash(fn, usedTypes)
+
+		fnCache.Put(key, cache.FuncEntry{
+			Hash:           hash,
+			TestFile:       filepath.Base(testFile),
+			GeneratedFuncs: []string{"Test" + fn.Name}, // упрощённо
+			Model:          model,
+			Timestamp:      time.Now(),
+		})
+	}
 }
 
 // resolveEnv возвращает flagVal если не пусто, иначе os.Getenv(envKey).
