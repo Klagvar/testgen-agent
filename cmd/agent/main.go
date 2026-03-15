@@ -22,6 +22,7 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/mutation"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
 	"github.com/gizatulin/testgen-agent/internal/pruner"
+	"github.com/gizatulin/testgen-agent/internal/report"
 	"github.com/gizatulin/testgen-agent/internal/validator"
 )
 
@@ -49,6 +50,7 @@ func main() {
 	mutationTest := flag.Bool("mutation", false, "Run mutation testing after test generation")
 	noCache := flag.Bool("no-cache", false, "Disable function-level caching")
 	noSmartDiff := flag.Bool("no-smart-diff", false, "Disable git-based function comparison")
+	reportFormat := flag.String("report", "", "Generate report: html, json (empty = no report)")
 
 	flag.Parse()
 
@@ -571,6 +573,62 @@ func main() {
 			} else {
 				fmt.Printf("💬 Report posted to PR #%d\n", prNum)
 			}
+		}
+	}
+
+	// ─── Generate report ───
+	reportFmt := *reportFormat
+	if reportFmt == "" && projectCfg.ReportFormat != "" && projectCfg.ReportFormat != "text" {
+		reportFmt = projectCfg.ReportFormat
+	}
+
+	if reportFmt == "html" {
+		modelName := *model
+		if modelName == "" {
+			modelName = "gpt-4o-mini"
+		}
+
+		reportData := report.ReportData{
+			ProjectName:    filepath.Base(*repoPath),
+			Branch:         *baseBranch,
+			Model:          modelName,
+			Timestamp:      time.Now(),
+			Duration:       time.Since(startTime),
+			TotalGenerated: totalGenerated,
+			TotalValidated: totalValidated,
+			TotalCached:    totalCached,
+		}
+
+		// Convert fileReports to report.FileResult
+		for _, fr := range fileReports {
+			reportData.Files = append(reportData.Files, report.FileResult{
+				File:         fr.File,
+				Functions:    fr.Functions,
+				TestsTotal:   fr.TestsTotal,
+				TestsPassed:  fr.TestsPassed,
+				DiffCoverage: fr.DiffCoverage,
+				Status:       fr.Status,
+			})
+		}
+
+		// Compute average diff coverage
+		var totalCov float64
+		covN := 0
+		for _, fr := range reportData.Files {
+			if fr.DiffCoverage > 0 {
+				totalCov += fr.DiffCoverage
+				covN++
+			}
+		}
+		if covN > 0 {
+			reportData.TotalDiffCov = totalCov / float64(covN)
+		}
+
+		reportPath, reportErr := report.GenerateHTML(reportData, *repoPath)
+		if reportErr != nil {
+			fmt.Printf("⚠️  Report generation failed: %v\n", reportErr)
+		} else {
+			fmt.Printf("📄 HTML report: %s\n", reportPath)
 		}
 	}
 
