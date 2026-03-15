@@ -9,6 +9,10 @@ testgen-agent
 # Test binary
 *.test
 
+# Coverage profiles
+cover.out
+*.coverprofile
+
 # Go workspace
 go.sum
 
