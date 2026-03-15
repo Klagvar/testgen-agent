@@ -1,175 +1,103 @@
 package sample
 
 import (
-	"math"
 	"testing"
 )
 
-func TestAdd(t *testing.T) {
+func TestPower(t *testing.T) {
 	tests := []struct {
 		name    string
-		a, b    int
+		base    int
+		exp     int
 		want    int
 		wantErr bool
 	}{
-		{"positive", 2, 3, 5, false},
-		{"negative", -1, -2, -3, false},
-		{"zero", 0, 0, 0, false},
-		{"mixed", -5, 3, -2, false},
-		{"overflow positive", math.MaxInt64, 1, 0, true},
-		{"overflow negative", math.MinInt64, -1, 0, true},
+		{"normal case", 2, 3, 8, false},
+		{"zero exponent", 5, 0, 1, false},
+		{"base one", 1, 10, 1, false},
+		{"base zero", 0, 5, 0, false},
+		{"negative exponent", 2, -1, 0, true},
+		{"negative exponent zero base", 0, -1, 0, true},
+		{"large base", 10, 2, 100, false},
+		{"large exponent", 2, 10, 1024, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Add(tt.a, tt.b)
+			got, err := Power(tt.base, tt.exp)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Add(%d, %d) error = %v, wantErr %v", tt.a, tt.b, err, tt.wantErr)
+				t.Errorf("Power(%d, %d) error = %v, wantErr %v", tt.base, tt.exp, err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr && got != tt.want {
-				t.Errorf("Add(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
+				t.Errorf("Power(%d, %d) = %d, want %d", tt.base, tt.exp, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestSubtract(t *testing.T) {
-	tests := []struct {
-		name string
-		a, b int
-		want int
-	}{
-		{"positive", 5, 3, 2},
-		{"negative", -1, -2, 1},
-		{"zero", 0, 0, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := Subtract(tt.a, tt.b); got != tt.want {
-				t.Errorf("Subtract(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDivide(t *testing.T) {
+func TestClamp(t *testing.T) {
 	tests := []struct {
 		name    string
-		a, b    int
+		x       int
+		min     int
+		max     int
 		want    int
 		wantErr bool
 	}{
-		{"normal", 10, 2, 5, false},
-		{"integer division", 7, 2, 3, false},
-		{"division by zero", 1, 0, 0, true},
+		{"within range", 5, 1, 10, 5, false},
+		{"below min", 0, 1, 10, 1, false},
+		{"above max", 15, 1, 10, 10, false},
+		{"min equals max", 5, 5, 5, 5, false},
+		{"min greater than max", 5, 10, 5, 0, true},
+		{"min equals max, x equals min", 5, 5, 5, 5, false},
+		{"negative values", -5, -10, -1, -5, false},
+		{"x equals min", 1, 1, 10, 1, false},
+		{"x equals max", 10, 1, 10, 10, false},
+		{"both negative range", -5, -10, -1, -5, false},
+		{"min greater than max with negatives", -5, -1, -10, 0, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Divide(tt.a, tt.b)
+			got, err := Clamp(tt.x, tt.min, tt.max)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Divide(%d, %d) error = %v, wantErr %v", tt.a, tt.b, err, tt.wantErr)
+				t.Errorf("Clamp(%d, %d, %d) error = %v, wantErr %v", tt.x, tt.min, tt.max, err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr && got != tt.want {
-				t.Errorf("Divide(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
+				t.Errorf("Clamp(%d, %d, %d) = %d, want %d", tt.x, tt.min, tt.max, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestMultiply(t *testing.T) {
+func TestGCD(t *testing.T) {
 	tests := []struct {
 		name string
-		a, b int
+		a    int
+		b    int
 		want int
 	}{
-		{"positive", 3, 4, 12},
-		{"negative", -3, 4, -12},
-		{"zero", 0, 100, 0},
+		{"both positive", 12, 8, 4},
+		{"first zero", 0, 5, 5},
+		{"second zero", 5, 0, 5},
+		{"both zero", 0, 0, 0},
+		{"first negative", -12, 8, 4},
+		{"second negative", 12, -8, 4},
+		{"both negative", -12, -8, 4},
+		{"coprime numbers", 7, 11, 1},
+		{"equal numbers", 5, 5, 5},
+		{"one is one", 1, 100, 1},
+		{"large numbers", 1000, 1500, 500},
+		{"one is zero", 0, 1, 1},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Multiply(tt.a, tt.b); got != tt.want {
-				t.Errorf("Multiply(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestSqrt(t *testing.T) {
-	tests := []struct {
-		name    string
-		x       float64
-		want    float64
-		wantErr bool
-	}{
-		{"positive", 4.0, 2.0, false},
-		{"zero", 0.0, 0.0, false},
-		{"negative", -1.0, 0.0, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := Sqrt(tt.x)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Sqrt(%f) error = %v, wantErr %v", tt.x, err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Errorf("Sqrt(%f) = %f, want %f", tt.x, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestModulo(t *testing.T) {
-	tests := []struct {
-		name    string
-		a, b    int
-		want    int
-		wantErr bool
-	}{
-		{"positive", 7, 3, 1, false},
-		{"negative dividend", -7, 3, -1, false},
-		{"negative divisor", 7, -3, 1, false},
-		{"both negative", -7, -3, -1, false},
-		{"exact division", 6, 3, 0, false},
-		{"division by zero", 5, 0, 0, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := Modulo(tt.a, tt.b)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Modulo(%d, %d) error = %v, wantErr %v", tt.a, tt.b, err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Errorf("Modulo(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestAbs(t *testing.T) {
-	tests := []struct {
-		name string
-		x    int
-		want int
-	}{
-		{"positive", 42, 42},
-		{"negative", -42, 42},
-		{"zero", 0, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := Abs(tt.x); got != tt.want {
-				t.Errorf("Abs(%d) = %d, want %d", tt.x, got, tt.want)
+			got := GCD(tt.a, tt.b)
+			if got != tt.want {
+				t.Errorf("GCD(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
 			}
 		})
 	}
