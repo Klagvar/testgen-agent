@@ -72,8 +72,8 @@ func TestNewClient(t *testing.T) {
 	if client == nil {
 		t.Fatal("NewClient вернул nil")
 	}
-	if client.config.Timeout != 120 {
-		t.Errorf("Timeout = %d, ожидалось 120", client.config.Timeout)
+	if client.config.Timeout != 300 {
+		t.Errorf("Timeout = %d, ожидалось 300", client.config.Timeout)
 	}
 }
 

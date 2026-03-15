@@ -28,7 +28,7 @@ func DefaultConfig() Config {
 	return Config{
 		BaseURL:   "https://api.openai.com/v1",
 		Model:     "gpt-4o-mini",
-		Timeout:   120,
+		Timeout:   300,
 		MaxTokens: 4096,
 	}
 }
@@ -42,7 +42,7 @@ type Client struct {
 // NewClient создаёт новый LLM-клиент.
 func NewClient(cfg Config) *Client {
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 120
+		cfg.Timeout = 300
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
