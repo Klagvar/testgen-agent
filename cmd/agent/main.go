@@ -12,6 +12,7 @@ import (
 
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
 	"github.com/gizatulin/testgen-agent/internal/cache"
+	"github.com/gizatulin/testgen-agent/internal/config"
 	"github.com/gizatulin/testgen-agent/internal/coverage"
 	"github.com/gizatulin/testgen-agent/internal/diff"
 	"github.com/gizatulin/testgen-agent/internal/gitdiff"
@@ -58,6 +59,21 @@ func main() {
 	if flag.NArg() > 1 && *baseBranch == "main" {
 		*baseBranch = flag.Arg(1)
 	}
+
+	// ─── Load project config (.testgen.yml) ───
+	projectCfg, cfgErr := config.Load(*repoPath)
+	if cfgErr != nil {
+		fmt.Printf("⚠️  Config: %v\n", cfgErr)
+	}
+	if errs := projectCfg.Validate(); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Printf("⚠️  Config error: %s\n", e)
+		}
+	}
+
+	// Apply config defaults (CLI flags take priority)
+	applyConfigDefaults(projectCfg, model, baseURL, apiKey, outDir,
+		coverageTarget, noValidate, noCoverage, noCache, noSmartDiff, mutationTest)
 
 	fmt.Printf("📂 Repository: %s\n", *repoPath)
 	fmt.Printf("🔀 Base branch: %s\n\n", *baseBranch)
@@ -109,6 +125,11 @@ func main() {
 
 		if !strings.HasSuffix(f.NewPath, ".go") || strings.HasSuffix(f.NewPath, "_test.go") {
 			fmt.Printf("     ⏭️  Skipped (not .go or is _test.go)\n\n")
+			continue
+		}
+
+		if projectCfg.ShouldExclude(f.NewPath) {
+			fmt.Printf("     ⏭️  Skipped by config (exclude pattern)\n\n")
 			continue
 		}
 
@@ -261,6 +282,7 @@ func main() {
 			ExistingTests: existingTests,
 			UsedTypes:     usedTypes,
 			CalledFuncs:   calledFuncs,
+			CustomPrompt:  projectCfg.CustomPrompt,
 		}
 
 		messages := prompt.BuildMessages(req)
@@ -849,4 +871,49 @@ func buildLLMConfig(apiKey, baseURL, model string) llm.Config {
 	}
 
 	return cfg
+}
+
+// applyConfigDefaults применяет значения из .testgen.yml для CLI-флагов,
+// которые не были указаны пользователем. CLI-флаги имеют приоритет.
+func applyConfigDefaults(
+	cfg *config.Config,
+	model, baseURL, apiKey, outDir *string,
+	coverageTarget *float64,
+	noValidate, noCoverage, noCache, noSmartDiff, mutationTest *bool,
+) {
+	// Только если флаг не задан — берём из конфига
+	if *model == "" && cfg.Model != "" {
+		*model = cfg.Model
+	}
+	if *baseURL == "" && cfg.APIURL != "" && cfg.APIURL != "https://api.openai.com/v1" {
+		*baseURL = cfg.APIURL
+	}
+	if *apiKey == "" && cfg.APIKey != "" {
+		*apiKey = cfg.APIKey
+	}
+	if *outDir == "" && cfg.OutDir != "" {
+		*outDir = cfg.OutDir
+	}
+
+	// Boolean flags: config enables them (but CLI --no-* can override)
+	if cfg.Mutation && !*mutationTest {
+		*mutationTest = true
+	}
+	if cfg.NoValidate && !*noValidate {
+		*noValidate = true
+	}
+	if cfg.NoCoverage && !*noCoverage {
+		*noCoverage = true
+	}
+	if cfg.NoCache && !*noCache {
+		*noCache = true
+	}
+	if cfg.NoSmartDiff && !*noSmartDiff {
+		*noSmartDiff = true
+	}
+
+	// Coverage threshold: use config if CLI uses default value
+	if *coverageTarget == coverageThreshold && cfg.CoverageThreshold > 0 {
+		*coverageTarget = cfg.CoverageThreshold
+	}
 }
