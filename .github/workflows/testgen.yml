@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          ./testgen-agent.exe --repo . --base "origin/${{ github.base_ref }}" --api-url http://localhost:11434/v1 --model qwen2.5-coder:14b
+          ./testgen-agent.exe --repo . --base "origin/${{ github.base_ref }}" --api-url http://localhost:11434/v1 --model qwen3-coder:30b
 
       - name: Show generated tests
         shell: pwsh
