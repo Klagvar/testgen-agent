@@ -1,16 +1,7 @@
-# Пример workflow для подключения testgen-agent к Go-проекту.
-# Этот файл нужно скопировать в .github/workflows/ целевого репозитория.
+# CI/CD workflow для testgen-agent.
+# Запускается на self-hosted runner (твой комп) с локальной Ollama.
 #
-# Что делает:
-# 1. При открытии/обновлении PR — запускает testgen-agent
-# 2. Агент анализирует diff, находит изменённые Go-функции
-# 3. Генерирует unit-тесты через LLM
-# 4. Коммитит тесты обратно в PR-ветку
-#
-# Необходимые секреты:
-# - TESTGEN_API_KEY — API-ключ LLM (или пустой для Ollama)
-# - (опционально) TESTGEN_API_URL — URL API
-# - (опционально) TESTGEN_MODEL — модель
+# Триггер: PR в main, изменения в .go файлах (кроме _test.go).
 
 name: Testgen — AI Test Generation
 
@@ -27,60 +18,52 @@ permissions:
 
 jobs:
   generate-tests:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
 
-      - name: Install tools
-        run: |
-          go install golang.org/x/tools/cmd/goimports@latest
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
 
       - name: Build testgen-agent
-        run: |
-          git clone https://github.com/gizatulin/testgen-agent.git /tmp/testgen-agent
-          cd /tmp/testgen-agent
-          go build -o /usr/local/bin/testgen-agent ./cmd/agent/
+        run: go build -o testgen-agent.exe ./cmd/agent/
 
       - name: Fetch base branch
         run: git fetch origin ${{ github.base_ref }} --depth=1
 
-      - name: Run testgen-agent
-        env:
-          TESTGEN_API_KEY: ${{ secrets.TESTGEN_API_KEY }}
-          TESTGEN_API_URL: ${{ secrets.TESTGEN_API_URL }}
-          TESTGEN_MODEL: ${{ secrets.TESTGEN_MODEL }}
+      - name: Check Ollama availability
         run: |
-          testgen-agent \
-            --repo . \
-            --base origin/${{ github.base_ref }}
+          curl -s http://localhost:11434/v1/models || echo "⚠️ Ollama не запущена!"
+
+      - name: Run testgen-agent
+        run: |
+          ./testgen-agent.exe --repo . --base origin/${{ github.base_ref }} --api-url http://localhost:11434/v1 --model qwen2.5-coder:14b
+
+      - name: Show generated tests
+        run: |
+          git diff --name-only
+          git diff --stat
 
       - name: Commit generated tests
         run: |
           git config user.name "testgen-agent[bot]"
           git config user.email "testgen-agent[bot]@users.noreply.github.com"
 
-          # Добавляем только _test.go файлы
-          git add -A '*_test.go'
+          git add -A '*_test.go' || true
 
           if git diff --cached --quiet; then
             echo "ℹ️ Нет новых тестов для коммита"
-            exit 0
+          else
+            git commit -m "🤖 testgen-agent: auto-generated tests"
+            git push
           fi
-
-          git commit -m "🤖 testgen-agent: автоматически сгенерированные тесты
-
-          Сгенерировано на основе diff изменений в PR.
-          Модель: ${TESTGEN_MODEL:-gpt-4o-mini}
-          "
-
-          git push
