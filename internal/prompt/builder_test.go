@@ -63,66 +63,61 @@ func TestBuildSystemPrompt(t *testing.T) {
 	sys := BuildSystemPrompt()
 
 	if sys == "" {
-		t.Fatal("системный промпт пуст")
+		t.Fatal("system prompt is empty")
 	}
 
-	// Проверяем ключевые инструкции
 	checks := []string{
 		"table-driven",
 		"testing",
-		"Граничные",
+		"Boundary",
 		"t.Errorf",
 		"package",
 	}
 	for _, check := range checks {
 		if !strings.Contains(sys, check) {
-			t.Errorf("системный промпт не содержит %q", check)
+			t.Errorf("system prompt does not contain %q", check)
 		}
 	}
 
-	t.Logf("Системный промпт (%d символов):\n%s", len(sys), sys)
+	t.Logf("System prompt (%d chars):\n%s", len(sys), sys)
 }
 
 func TestBuildUserPrompt_ContainsFunctions(t *testing.T) {
 	req := sampleRequest()
 	prompt := BuildUserPrompt(req)
 
-	// Должен содержать все функции
 	for _, fn := range req.TargetFuncs {
 		if !strings.Contains(prompt, fn.Name) {
-			t.Errorf("промпт не содержит функцию %q", fn.Name)
+			t.Errorf("prompt does not contain function %q", fn.Name)
 		}
 		if !strings.Contains(prompt, fn.Signature) {
-			t.Errorf("промпт не содержит сигнатуру %q", fn.Signature)
+			t.Errorf("prompt does not contain signature %q", fn.Signature)
 		}
 	}
 
-	// Должен содержать имя пакета
 	if !strings.Contains(prompt, "calc") {
-		t.Error("промпт не содержит имя пакета")
+		t.Error("prompt does not contain package name")
 	}
 
-	// Должен содержать импорты
 	if !strings.Contains(prompt, "errors") || !strings.Contains(prompt, "math") {
-		t.Error("промпт не содержит импорты")
+		t.Error("prompt does not contain imports")
 	}
 
-	t.Logf("User промпт (%d символов)", len(prompt))
+	t.Logf("User prompt (%d chars)", len(prompt))
 }
 
 func TestBuildUserPrompt_ContainsBody(t *testing.T) {
 	req := sampleRequest()
 	prompt := BuildUserPrompt(req)
 
-	// Должен содержать тела функций
 	if !strings.Contains(prompt, "result := a + b") {
-		t.Error("промпт не содержит тело Add")
+		t.Error("prompt does not contain Add body")
 	}
 	if !strings.Contains(prompt, "return a * b") {
-		t.Error("промпт не содержит тело Multiply")
+		t.Error("prompt does not contain Multiply body")
 	}
 	if !strings.Contains(prompt, "math.Sqrt(x)") {
-		t.Error("промпт не содержит тело Sqrt")
+		t.Error("prompt does not contain Sqrt body")
 	}
 }
 
@@ -130,14 +125,12 @@ func TestBuildUserPrompt_ContainsBranches(t *testing.T) {
 	req := sampleRequest()
 	prompt := BuildUserPrompt(req)
 
-	// Add имеет ветвление (if), должно быть обнаружено
-	if !strings.Contains(prompt, "Условие") {
-		t.Error("промпт не содержит анализ ветвлений для Add")
+	if !strings.Contains(prompt, "Condition") {
+		t.Error("prompt does not contain branch analysis for Add")
 	}
 
-	// Sqrt тоже имеет if x < 0
 	if !strings.Contains(prompt, "x < 0") {
-		t.Error("промпт не содержит условие x < 0 для Sqrt")
+		t.Error("prompt does not contain condition x < 0 for Sqrt")
 	}
 }
 
@@ -146,10 +139,10 @@ func TestBuildUserPrompt_ContainsDocComment(t *testing.T) {
 	prompt := BuildUserPrompt(req)
 
 	if !strings.Contains(prompt, "переполнение") {
-		t.Error("промпт не содержит документацию Add")
+		t.Error("prompt does not contain Add documentation")
 	}
 	if !strings.Contains(prompt, "умножает") {
-		t.Error("промпт не содержит документацию Multiply")
+		t.Error("prompt does not contain Multiply documentation")
 	}
 }
 
@@ -160,14 +153,14 @@ func TestBuildUserPrompt_WithExistingTests(t *testing.T) {
 }`
 	prompt := BuildUserPrompt(req)
 
-	if !strings.Contains(prompt, "Существующие тесты") {
-		t.Error("промпт не содержит раздел существующих тестов")
+	if !strings.Contains(prompt, "Existing Tests") {
+		t.Error("prompt does not contain existing tests section")
 	}
-	if !strings.Contains(prompt, "не дублируй") {
-		t.Error("промпт не содержит инструкцию не дублировать")
+	if !strings.Contains(prompt, "MUST PRESERVE") {
+		t.Error("prompt does not contain preserve instruction")
 	}
 	if !strings.Contains(prompt, "TestAdd") {
-		t.Error("промпт не содержит текст существующего теста")
+		t.Error("prompt does not contain existing test text")
 	}
 }
 
@@ -176,8 +169,8 @@ func TestBuildUserPrompt_WithoutExistingTests(t *testing.T) {
 	req.ExistingTests = ""
 	prompt := BuildUserPrompt(req)
 
-	if strings.Contains(prompt, "Существующие тесты") {
-		t.Error("промпт содержит раздел существующих тестов, хотя их нет")
+	if strings.Contains(prompt, "Existing Tests") {
+		t.Error("prompt contains existing tests section when there are none")
 	}
 }
 
@@ -186,19 +179,18 @@ func TestBuildMessages(t *testing.T) {
 	msgs := BuildMessages(req)
 
 	if len(msgs) != 2 {
-		t.Fatalf("ожидалось 2 сообщения, получено %d", len(msgs))
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
 
 	if msgs[0].Role != "system" {
-		t.Errorf("первое сообщение должно быть system, получено %q", msgs[0].Role)
+		t.Errorf("first message should be system, got %q", msgs[0].Role)
 	}
 	if msgs[1].Role != "user" {
-		t.Errorf("второе сообщение должно быть user, получено %q", msgs[1].Role)
+		t.Errorf("second message should be user, got %q", msgs[1].Role)
 	}
 
-	// Проверяем что контент не пустой
 	if msgs[0].Content == "" || msgs[1].Content == "" {
-		t.Error("содержимое сообщений не должно быть пустым")
+		t.Error("message content must not be empty")
 	}
 }
 
@@ -223,13 +215,12 @@ func TestAnalyzeBranches(t *testing.T) {
 }`
 
 	branches := analyzeBranches(body)
-	t.Logf("Найденные ветвления: %v", branches)
+	t.Logf("Found branches: %v", branches)
 
 	if len(branches) < 5 {
-		t.Errorf("ожидалось >= 5 ветвлений, получено %d", len(branches))
+		t.Errorf("expected >= 5 branches, got %d", len(branches))
 	}
 
-	// Проверяем типы
 	hasIf := false
 	hasElseIf := false
 	hasElse := false
@@ -238,16 +229,16 @@ func TestAnalyzeBranches(t *testing.T) {
 	hasErrCheck := false
 
 	for _, b := range branches {
-		if strings.HasPrefix(b, "Условие:") {
+		if strings.HasPrefix(b, "Condition:") {
 			hasIf = true
 		}
-		if strings.HasPrefix(b, "Иначе-если:") {
+		if strings.HasPrefix(b, "Else-if:") {
 			hasElseIf = true
 		}
-		if b == "Ветка else" {
+		if b == "Else branch" {
 			hasElse = true
 		}
-		if b == "Switch-выражение" {
+		if b == "Switch statement" {
 			hasSwitch = true
 		}
 		if strings.HasPrefix(b, "Case:") {
@@ -259,21 +250,21 @@ func TestAnalyzeBranches(t *testing.T) {
 	}
 
 	if !hasIf {
-		t.Error("не найдено условие if")
+		t.Error("condition if not found")
 	}
 	if !hasElseIf {
-		t.Error("не найдено else if")
+		t.Error("else if not found")
 	}
 	if !hasElse {
-		t.Error("не найдена ветка else")
+		t.Error("else branch not found")
 	}
 	if !hasSwitch {
-		t.Error("не найден switch")
+		t.Error("switch not found")
 	}
 	if !hasCase {
-		t.Error("не найден case")
+		t.Error("case not found")
 	}
 	if !hasErrCheck {
-		t.Error("не найдена проверка ошибки")
+		t.Error("error check not found")
 	}
 }

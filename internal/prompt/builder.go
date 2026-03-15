@@ -11,60 +11,66 @@ import (
 
 // TestGenRequest — входные данные для генерации промпта.
 type TestGenRequest struct {
-	PackageName    string               // имя пакета
-	FilePath       string               // путь к файлу
-	Imports        []string             // импорты файла
-	TargetFuncs    []analyzer.FuncInfo  // затронутые функции
-	ExistingTests  string               // существующие тесты (если есть)
+	PackageName   string              // имя пакета
+	FilePath      string              // путь к файлу
+	Imports       []string            // импорты файла
+	TargetFuncs   []analyzer.FuncInfo // затронутые функции
+	ExistingTests string              // существующие тесты (если есть)
 }
 
 // BuildSystemPrompt формирует системный промпт — инструкции для LLM.
 func BuildSystemPrompt() string {
-	return `Ты — опытный Go-разработчик, специализирующийся на написании юнит-тестов.
+	return `You are an expert Go developer specializing in writing unit tests.
 
-Твоя задача — сгенерировать качественные юнит-тесты для предоставленных Go-функций.
+Your task is to generate high-quality unit tests for the provided Go functions.
 
-## Требования к тестам:
+## Test Requirements
 
-1. **Формат**: используй стандартный пакет "testing". Предпочитай table-driven tests.
-2. **Покрытие**: покрой все ветви выполнения:
-   - Нормальные случаи (happy path)
-   - Граничные значения (0, пустые строки, nil, максимальные значения)
-   - Ошибочные случаи (невалидный ввод, деление на ноль, и т.д.)
-3. **Именование**: имена тестов должны быть описательными, формат: Test<FuncName>_<Scenario>
-4. **Изоляция**: каждый тест должен быть независимым.
-5. **Assertions**: используй t.Errorf / t.Fatalf для проверок. НЕ используй внешние assertion-библиотеки.
-6. **Выходной формат**: верни ТОЛЬКО Go-код — один файл _test.go, готовый к компиляции.
+1. **Format**: Use the standard "testing" package. Prefer table-driven tests.
+2. **Coverage**: Cover all execution branches:
+   - Happy path (normal cases)
+   - Boundary values (0, empty strings, nil, max values)
+   - Error cases (invalid input, division by zero, etc.)
+3. **Naming**: Test names must be descriptive, format: Test<FuncName>_<Scenario>
+4. **Isolation**: Each test must be independent.
+5. **Assertions**: Use t.Errorf / t.Fatalf for checks. Do NOT use external assertion libraries (e.g. testify).
+6. **Output format**: Return ONLY Go code — a single _test.go file, ready to compile.
 
-## Частые ошибки (ИЗБЕГАЙ ИХ):
+## Common Mistakes (AVOID THESE)
 
-- НЕ используй константы вроде math.MaxInt64+1 или -math.MinInt64 — они вызывают overflow при компиляции.
-  Для тестов переполнения используй переменные: a := math.MaxInt64 и передавай их в функцию.
-- НЕ импортируй пакеты, которые не используешь в тестах — Go не скомпилирует.
-- Если переменная объявлена но не используется, Go не скомпилирует. Используй _ для неиспользуемых значений.
-  Пример: _, err := SomeFunc() если тебе нужен только err.
-- Проверяй, что сигнатура вызова совпадает с определением функции (количество и типы аргументов/возвратов).
-- Оператор % в Go сохраняет знак делимого: -7 % 3 == -1 (НЕ 2 как в Python). Учитывай это в expected-значениях.
-- В строковых литералах Go НЕ используй невалидные escape-последовательности. Допустимые: \n \t \r \\ \" \' \a \b \f \v \0 \x \u \U.
-  Если в строке нужен обратный слэш — экранируй его: "\\" или используй raw string: ` + "`" + `C:\path` + "`" + `.
-- НЕ используй filepath.Join с хардкод путями — пути должны быть платформо-независимыми.
-- При тестировании функций с os/exec (exec.Command), помни что команды платформо-зависимы.
+- Do NOT use compile-time overflow expressions like math.MaxInt64+1 or -math.MinInt64.
+  For overflow tests, use variables: a := math.MaxInt64, then pass them to the function.
+- Do NOT import unused packages — Go will not compile.
+- Do NOT declare unused variables — Go will not compile. Use _ for unused values.
+  Example: _, err := SomeFunc() if you only need the error.
+- Verify that function call signatures match definitions (number and types of args/returns).
+- The % operator in Go preserves the sign of the dividend: -7 % 3 == -1 (NOT 2 like in Python).
+- Do NOT use invalid escape sequences in Go string literals. Valid ones: \n \t \r \\ \" \' \a \b \f \v \0 \x \u \U.
+  For backslashes use: "\\" or raw strings.
+- Do NOT use filepath.Join with hardcoded OS-specific paths.
+- When testing functions using os/exec, remember that commands are platform-dependent.
+- Do NOT redeclare functions that already exist in the existing test file.
 
-## Структура ответа:
+## Existing Tests Policy
 
-Верни ТОЛЬКО код Go-файла с тестами — без пояснений, без markdown-обёрток.
-Код должен начинаться с "package ..." и быть валидным Go-кодом.`
+If existing tests are provided, you MUST include them UNCHANGED in your output.
+Add new tests AFTER the existing ones. Do NOT modify, rename, or remove existing test functions.
+
+## Response Format
+
+Return ONLY the Go test file code — no explanations, no markdown wrappers.
+Code must start with "package ..." and be valid, compilable Go code.`
 }
 
 // BuildUserPrompt формирует пользовательский промпт с контекстом функций.
 func BuildUserPrompt(req TestGenRequest) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Сгенерируй юнит-тесты для пакета `%s` (файл `%s`).\n\n", req.PackageName, req.FilePath))
+	sb.WriteString(fmt.Sprintf("Generate unit tests for package `%s` (file `%s`).\n\n", req.PackageName, req.FilePath))
 
 	// Импорты файла
 	if len(req.Imports) > 0 {
-		sb.WriteString("## Импорты исходного файла\n\n```go\nimport (\n")
+		sb.WriteString("## Source File Imports\n\n```go\nimport (\n")
 		for _, imp := range req.Imports {
 			sb.WriteString(fmt.Sprintf("\t\"%s\"\n", imp))
 		}
@@ -72,42 +78,42 @@ func BuildUserPrompt(req TestGenRequest) string {
 	}
 
 	// Функции для тестирования
-	sb.WriteString(fmt.Sprintf("## Функции для тестирования (%d шт.)\n\n", len(req.TargetFuncs)))
+	sb.WriteString(fmt.Sprintf("## Functions to Test (%d)\n\n", len(req.TargetFuncs)))
 
 	for i, fn := range req.TargetFuncs {
 		sb.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, fn.Name))
 
 		// Сигнатура
-		sb.WriteString(fmt.Sprintf("**Сигнатура:** `%s`\n\n", fn.Signature))
+		sb.WriteString(fmt.Sprintf("**Signature:** `%s`\n\n", fn.Signature))
 
 		// Документация
 		if fn.DocComment != "" {
-			sb.WriteString(fmt.Sprintf("**Документация:** %s\n", strings.TrimSpace(fn.DocComment)))
+			sb.WriteString(fmt.Sprintf("**Documentation:** %s\n", strings.TrimSpace(fn.DocComment)))
 		}
 
 		// Параметры
 		if len(fn.Params) > 0 {
-			sb.WriteString("**Параметры:**\n")
+			sb.WriteString("**Parameters:**\n")
 			for _, p := range fn.Params {
-				sb.WriteString(fmt.Sprintf("- `%s` — тип `%s`\n", p.Name, p.Type))
+				sb.WriteString(fmt.Sprintf("- `%s` — type `%s`\n", p.Name, p.Type))
 			}
 			sb.WriteString("\n")
 		}
 
 		// Возвращаемые типы
 		if len(fn.Returns) > 0 {
-			sb.WriteString(fmt.Sprintf("**Возвращает:** `%s`\n\n", strings.Join(fn.Returns, ", ")))
+			sb.WriteString(fmt.Sprintf("**Returns:** `%s`\n\n", strings.Join(fn.Returns, ", ")))
 		}
 
 		// Тело функции
-		sb.WriteString("**Реализация:**\n\n```go\n")
+		sb.WriteString("**Implementation:**\n\n```go\n")
 		sb.WriteString(fn.Body)
 		sb.WriteString("\n```\n\n")
 
 		// Анализ ветвлений
 		branches := analyzeBranches(fn.Body)
 		if len(branches) > 0 {
-			sb.WriteString("**Ветвления в коде:**\n")
+			sb.WriteString("**Code branches:**\n")
 			for _, b := range branches {
 				sb.WriteString(fmt.Sprintf("- %s\n", b))
 			}
@@ -119,17 +125,21 @@ func BuildUserPrompt(req TestGenRequest) string {
 
 	// Существующие тесты
 	if req.ExistingTests != "" {
-		sb.WriteString("## Существующие тесты (не дублируй их)\n\n```go\n")
+		sb.WriteString("## Existing Tests (MUST PRESERVE)\n\n")
+		sb.WriteString("The test file already contains tests. You MUST include ALL of them in your output UNCHANGED.\n")
+		sb.WriteString("Add new tests AFTER the existing ones. Do NOT modify or remove any existing test functions.\n\n")
+		sb.WriteString("```go\n")
 		sb.WriteString(req.ExistingTests)
 		sb.WriteString("\n```\n\n")
+		sb.WriteString("Generate the complete _test.go file: first ALL existing tests (unchanged), then NEW tests for the listed functions.\n")
+	} else {
+		sb.WriteString("Generate a complete _test.go file with tests for all listed functions.\n")
 	}
-
-	sb.WriteString("Сгенерируй полный файл _test.go с тестами для всех перечисленных функций.\n")
 
 	return sb.String()
 }
 
-// analyzeBranches простой анализ ветвлений в теле функции для подсказки LLM.
+// analyzeBranches — простой анализ ветвлений в теле функции для подсказки LLM.
 func analyzeBranches(body string) []string {
 	var branches []string
 
@@ -138,24 +148,23 @@ func analyzeBranches(body string) []string {
 		trimmed := strings.TrimSpace(line)
 
 		if strings.HasPrefix(trimmed, "if ") {
-			// Извлекаем условие
 			cond := strings.TrimPrefix(trimmed, "if ")
 			cond = strings.TrimSuffix(cond, " {")
-			branches = append(branches, fmt.Sprintf("Условие: `%s`", cond))
+			branches = append(branches, fmt.Sprintf("Condition: `%s`", cond))
 		} else if strings.HasPrefix(trimmed, "} else if ") {
 			cond := strings.TrimPrefix(trimmed, "} else if ")
 			cond = strings.TrimSuffix(cond, " {")
-			branches = append(branches, fmt.Sprintf("Иначе-если: `%s`", cond))
+			branches = append(branches, fmt.Sprintf("Else-if: `%s`", cond))
 		} else if trimmed == "} else {" {
-			branches = append(branches, "Ветка else")
+			branches = append(branches, "Else branch")
 		} else if strings.HasPrefix(trimmed, "switch ") {
-			branches = append(branches, "Switch-выражение")
+			branches = append(branches, "Switch statement")
 		} else if strings.HasPrefix(trimmed, "case ") {
 			caseVal := strings.TrimPrefix(trimmed, "case ")
 			caseVal = strings.TrimSuffix(caseVal, ":")
 			branches = append(branches, fmt.Sprintf("Case: `%s`", caseVal))
 		} else if strings.Contains(trimmed, "err != nil") {
-			branches = append(branches, "Проверка ошибки (err != nil)")
+			branches = append(branches, "Error check (err != nil)")
 		}
 	}
 
@@ -187,22 +196,23 @@ func BuildFixMessages(req TestGenRequest, previousCode string, errors string, at
 func buildFixPrompt(previousCode string, errors string, attempt int) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("## Ошибка в сгенерированных тестах (попытка %d)\n\n", attempt))
-	sb.WriteString("Предыдущий код тестов не прошёл валидацию. Вот ошибки:\n\n")
+	sb.WriteString(fmt.Sprintf("## Error in Generated Tests (attempt %d)\n\n", attempt))
+	sb.WriteString("The previous test code failed validation. Here are the errors:\n\n")
 	sb.WriteString("```\n")
 	sb.WriteString(errors)
 	sb.WriteString("\n```\n\n")
 
-	sb.WriteString("## Инструкции по исправлению\n\n")
-	sb.WriteString("1. Внимательно прочитай ошибки выше.\n")
-	sb.WriteString("2. Исправь **только** проблемные места в коде тестов.\n")
-	sb.WriteString("3. Убедись, что:\n")
-	sb.WriteString("   - Все типы корректны (нет overflow, нет несовпадений типов)\n")
-	sb.WriteString("   - Все импорты используются и присутствуют\n")
-	sb.WriteString("   - Все вызываемые функции существуют с правильными сигнатурами\n")
-	sb.WriteString("   - Тесты корректно проверяют ожидаемое поведение\n")
-	sb.WriteString("4. Верни ПОЛНЫЙ исправленный файл _test.go (не фрагмент, а весь файл).\n")
-	sb.WriteString("5. Верни ТОЛЬКО код — без пояснений, без markdown-обёрток.\n")
+	sb.WriteString("## Fix Instructions\n\n")
+	sb.WriteString("1. Carefully read the errors above.\n")
+	sb.WriteString("2. Fix ONLY the problematic parts of the test code.\n")
+	sb.WriteString("3. Make sure that:\n")
+	sb.WriteString("   - All types are correct (no overflow, no type mismatches)\n")
+	sb.WriteString("   - All imports are used and present\n")
+	sb.WriteString("   - All called functions exist with correct signatures\n")
+	sb.WriteString("   - Tests correctly verify expected behavior\n")
+	sb.WriteString("   - Existing tests are preserved unchanged\n")
+	sb.WriteString("4. Return the COMPLETE fixed _test.go file (not a fragment, the entire file).\n")
+	sb.WriteString("5. Return ONLY code — no explanations, no markdown wrappers.\n")
 
 	return sb.String()
 }
