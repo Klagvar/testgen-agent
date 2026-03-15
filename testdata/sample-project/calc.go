@@ -55,3 +55,45 @@ func Abs(x int) int {
 	}
 	return x
 }
+
+// Power возводит base в степень exp.
+// Поддерживает только неотрицательные степени.
+func Power(base, exp int) (int, error) {
+	if exp < 0 {
+		return 0, errors.New("negative exponent not supported")
+	}
+	result := 1
+	for i := 0; i < exp; i++ {
+		result *= base
+	}
+	return result, nil
+}
+
+// Clamp ограничивает значение x в диапазоне [min, max].
+// Если min > max, возвращает ошибку.
+func Clamp(x, min, max int) (int, error) {
+	if min > max {
+		return 0, errors.New("min must be <= max")
+	}
+	if x < min {
+		return min, nil
+	}
+	if x > max {
+		return max, nil
+	}
+	return x, nil
+}
+
+// GCD вычисляет наибольший общий делитель двух чисел по алгоритму Евклида.
+func GCD(a, b int) int {
+	if a < 0 {
+		a = -a
+	}
+	if b < 0 {
+		b = -b
+	}
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
