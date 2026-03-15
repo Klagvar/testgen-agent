@@ -11,14 +11,16 @@ import (
 
 // TestGenRequest — входные данные для генерации промпта.
 type TestGenRequest struct {
-	PackageName   string              // имя пакета
-	FilePath      string              // путь к файлу
-	Imports       []string            // импорты файла
-	TargetFuncs   []analyzer.FuncInfo // затронутые функции
-	ExistingTests string              // существующие тесты (если есть)
-	UsedTypes     []analyzer.TypeInfo // типы из пакета, используемые функциями
-	CalledFuncs   []analyzer.FuncInfo // вызываемые функции из пакета (кросс-файловые)
-	CustomPrompt  string              // дополнительные инструкции из .testgen.yml
+	PackageName      string                       // имя пакета
+	FilePath         string                       // путь к файлу
+	Imports          []string                     // импорты файла
+	TargetFuncs      []analyzer.FuncInfo          // затронутые функции
+	ExistingTests    string                       // существующие тесты (если есть)
+	UsedTypes        []analyzer.TypeInfo          // типы из пакета, используемые функциями
+	CalledFuncs      []analyzer.FuncInfo          // вызываемые функции из пакета (кросс-файловые)
+	CustomPrompt     string                       // дополнительные инструкции из .testgen.yml
+	ConcurrencyInfos map[string]analyzer.ConcurrencyInfo // funcName → concurrency info
+	RaceDetection    bool                         // run with -race flag
 }
 
 // BuildSystemPrompt формирует системный промпт — инструкции для LLM.
@@ -173,6 +175,18 @@ func BuildUserPrompt(req TestGenRequest) string {
 				sb.WriteString(fmt.Sprintf("- %s\n", b))
 			}
 			sb.WriteString("\n")
+		}
+
+		// Concurrency hints
+		if req.ConcurrencyInfos != nil {
+			if ci, ok := req.ConcurrencyInfos[fn.Name]; ok && ci.IsConcurrent {
+				sb.WriteString("**⚡ Concurrency Analysis:**\n\n")
+				sb.WriteString(ci.ConcurrencyHint())
+				sb.WriteString("\n")
+				if req.RaceDetection {
+					sb.WriteString("⚠️ Tests will be run with `-race` flag. Ensure all concurrent accesses are properly synchronized.\n\n")
+				}
+			}
 		}
 
 		sb.WriteString("---\n\n")
