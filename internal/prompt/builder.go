@@ -16,6 +16,8 @@ type TestGenRequest struct {
 	Imports       []string            // импорты файла
 	TargetFuncs   []analyzer.FuncInfo // затронутые функции
 	ExistingTests string              // существующие тесты (если есть)
+	UsedTypes     []analyzer.TypeInfo // типы из пакета, используемые функциями
+	CalledFuncs   []analyzer.FuncInfo // вызываемые функции из пакета (кросс-файловые)
 }
 
 // BuildSystemPrompt формирует системный промпт — инструкции для LLM.
@@ -77,11 +79,63 @@ func BuildUserPrompt(req TestGenRequest) string {
 		sb.WriteString(")\n```\n\n")
 	}
 
+	// Типы из пакета (если есть)
+	if len(req.UsedTypes) > 0 {
+		sb.WriteString("## Type Definitions (from the same package)\n\n")
+		sb.WriteString("These types are used by the functions under test. Use them to correctly construct test data.\n\n")
+		for _, ti := range req.UsedTypes {
+			sb.WriteString(fmt.Sprintf("### %s (%s)\n\n", ti.Name, ti.Kind))
+			if ti.Source != "" {
+				sb.WriteString("```go\n")
+				sb.WriteString(ti.Source)
+				sb.WriteString("\n```\n\n")
+			}
+			if ti.Kind == "interface" && len(ti.Methods) > 0 {
+				sb.WriteString("**Methods:**\n")
+				for _, m := range ti.Methods {
+					sb.WriteString(fmt.Sprintf("- `%s%s`\n", m.Name, m.Signature))
+				}
+				sb.WriteString("\n")
+				sb.WriteString("⚠️ To test functions that use this interface, create a **mock struct** implementing it.\n")
+				sb.WriteString("Example pattern:\n```go\ntype mock" + ti.Name + " struct {\n")
+				for _, m := range ti.Methods {
+					sb.WriteString(fmt.Sprintf("\t%sFunc func%s\n", m.Name, m.Signature))
+				}
+				sb.WriteString("}\n")
+				for _, m := range ti.Methods {
+					sb.WriteString(fmt.Sprintf("func (m *mock%s) %s%s { return m.%sFunc%s }\n",
+						ti.Name, m.Name, m.Signature,
+						m.Name, extractCallArgs(m.Signature)))
+				}
+				sb.WriteString("```\n\n")
+			}
+		}
+	}
+
+	// Вызываемые функции из пакета (кросс-файловый контекст)
+	if len(req.CalledFuncs) > 0 {
+		sb.WriteString("## Helper Functions (called by functions under test)\n\n")
+		sb.WriteString("These functions are called internally. You do NOT need to test them, but knowing their signatures helps write correct tests.\n\n")
+		for _, fn := range req.CalledFuncs {
+			sb.WriteString(fmt.Sprintf("- `%s`", fn.Signature))
+			if fn.DocComment != "" {
+				sb.WriteString(fmt.Sprintf(" — %s", strings.TrimSpace(fn.DocComment)))
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
 	// Функции для тестирования
 	sb.WriteString(fmt.Sprintf("## Functions to Test (%d)\n\n", len(req.TargetFuncs)))
 
 	for i, fn := range req.TargetFuncs {
 		sb.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, fn.Name))
+
+		// Ресивер
+		if fn.Receiver != "" {
+			sb.WriteString(fmt.Sprintf("**Receiver:** `%s` — this is a method. Create an instance of the receiver type in the test.\n\n", fn.Receiver))
+		}
 
 		// Сигнатура
 		sb.WriteString(fmt.Sprintf("**Signature:** `%s`\n\n", fn.Signature))
@@ -137,6 +191,30 @@ func BuildUserPrompt(req TestGenRequest) string {
 	}
 
 	return sb.String()
+}
+
+// extractCallArgs извлекает аргументы для вызова функции из сигнатуры.
+// "(id string) (*Entity, error)" → "(id)"
+func extractCallArgs(sig string) string {
+	parenEnd := strings.Index(sig, ")")
+	if parenEnd < 0 {
+		return "()"
+	}
+	params := sig[1:parenEnd]
+	if params == "" {
+		return "()"
+	}
+
+	parts := strings.Split(params, ",")
+	var args []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		fields := strings.Fields(p)
+		if len(fields) > 0 {
+			args = append(args, fields[0])
+		}
+	}
+	return "(" + strings.Join(args, ", ") + ")"
 }
 
 // analyzeBranches — простой анализ ветвлений в теле функции для подсказки LLM.

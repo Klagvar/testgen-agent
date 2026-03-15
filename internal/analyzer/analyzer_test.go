@@ -261,3 +261,233 @@ func containsSubstr(s, substr string) bool {
 	}
 	return false
 }
+
+// ─── Тесты для TypeInfo и PackageAnalysis ───
+
+const sampleCodeWithTypes = `package service
+
+import "errors"
+
+// Config содержит настройки сервиса.
+type Config struct {
+	Host    string
+	Port    int
+	Verbose bool
+}
+
+// Repository — интерфейс доступа к данным.
+type Repository interface {
+	Get(id string) (*Entity, error)
+	Save(entity *Entity) error
+	Delete(id string) error
+}
+
+// Entity — доменная сущность.
+type Entity struct {
+	ID   string
+	Name string
+}
+
+// Status — алиас для строки.
+type Status string
+
+// Service предоставляет бизнес-логику.
+type Service struct {
+	config *Config
+	repo   Repository
+}
+
+// NewService создаёт новый сервис.
+func NewService(cfg *Config, repo Repository) *Service {
+	return &Service{config: cfg, repo: repo}
+}
+
+// GetEntity получает сущность по ID.
+func (s *Service) GetEntity(id string) (*Entity, error) {
+	if id == "" {
+		return nil, errors.New("empty id")
+	}
+	return s.repo.Get(id)
+}
+
+// helper — вспомогательная функция.
+func helper(s string) string {
+	return s + "_processed"
+}
+
+// ProcessEntity обрабатывает сущность.
+func (s *Service) ProcessEntity(id string) (string, error) {
+	entity, err := s.GetEntity(id)
+	if err != nil {
+		return "", err
+	}
+	return helper(entity.Name), nil
+}
+`
+
+func TestAnalyzeSource_Types(t *testing.T) {
+	analysis, err := AnalyzeSource("service.go", sampleCodeWithTypes)
+	if err != nil {
+		t.Fatalf("AnalyzeSource error: %v", err)
+	}
+
+	if len(analysis.Types) != 5 {
+		names := make([]string, len(analysis.Types))
+		for i, ti := range analysis.Types {
+			names[i] = ti.Name
+		}
+		t.Fatalf("expected 5 types, got %d: %v", len(analysis.Types), names)
+	}
+
+	// Config = struct
+	configType := findType(analysis.Types, "Config")
+	if configType == nil {
+		t.Fatal("Config type not found")
+	}
+	if configType.Kind != "struct" {
+		t.Errorf("Config.Kind = %q, want struct", configType.Kind)
+	}
+	if len(configType.Fields) != 3 {
+		t.Errorf("Config fields = %d, want 3", len(configType.Fields))
+	}
+
+	// Repository = interface
+	repoType := findType(analysis.Types, "Repository")
+	if repoType == nil {
+		t.Fatal("Repository type not found")
+	}
+	if repoType.Kind != "interface" {
+		t.Errorf("Repository.Kind = %q, want interface", repoType.Kind)
+	}
+	if len(repoType.Methods) != 3 {
+		t.Errorf("Repository methods = %d, want 3", len(repoType.Methods))
+	}
+	t.Logf("Repository methods: %+v", repoType.Methods)
+
+	// Status = alias
+	statusType := findType(analysis.Types, "Status")
+	if statusType == nil {
+		t.Fatal("Status type not found")
+	}
+	if statusType.Kind != "alias" {
+		t.Errorf("Status.Kind = %q, want alias", statusType.Kind)
+	}
+}
+
+func TestAnalyzeSource_Receiver(t *testing.T) {
+	analysis, err := AnalyzeSource("service.go", sampleCodeWithTypes)
+	if err != nil {
+		t.Fatalf("AnalyzeSource error: %v", err)
+	}
+
+	// GetEntity has receiver *Service
+	getEntity := findFunc(analysis.Functions, "GetEntity")
+	if getEntity == nil {
+		t.Fatal("GetEntity not found")
+	}
+	if getEntity.Receiver != "*Service" {
+		t.Errorf("GetEntity.Receiver = %q, want *Service", getEntity.Receiver)
+	}
+	t.Logf("GetEntity signature: %s", getEntity.Signature)
+
+	// NewService has no receiver
+	newService := findFunc(analysis.Functions, "NewService")
+	if newService == nil {
+		t.Fatal("NewService not found")
+	}
+	if newService.Receiver != "" {
+		t.Errorf("NewService.Receiver = %q, want empty", newService.Receiver)
+	}
+}
+
+func TestFindUsedTypes(t *testing.T) {
+	analysis, err := AnalyzeSource("service.go", sampleCodeWithTypes)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	// NewService takes *Config and Repository, returns *Service
+	newService := findFunc(analysis.Functions, "NewService")
+	if newService == nil {
+		t.Fatal("NewService not found")
+	}
+
+	usedTypes := FindUsedTypes(*newService, analysis.Types)
+	typeNames := make(map[string]bool)
+	for _, ti := range usedTypes {
+		typeNames[ti.Name] = true
+	}
+
+	t.Logf("Used types for NewService: %v", typeNames)
+
+	if !typeNames["Config"] {
+		t.Error("Config should be in used types")
+	}
+	if !typeNames["Repository"] {
+		t.Error("Repository should be in used types")
+	}
+	if !typeNames["Service"] {
+		t.Error("Service should be in used types")
+	}
+}
+
+func TestFindCalledFunctions(t *testing.T) {
+	analysis, err := AnalyzeSource("service.go", sampleCodeWithTypes)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	pkg := &PackageAnalysis{
+		Package:   analysis.Package,
+		FuncIndex: make(map[string]FuncInfo),
+	}
+	for _, fn := range analysis.Functions {
+		pkg.FuncIndex[fn.Name] = fn
+		if fn.Receiver != "" {
+			recvName := fn.Receiver
+			if len(recvName) > 0 && recvName[0] == '*' {
+				recvName = recvName[1:]
+			}
+			pkg.FuncIndex[recvName+"."+fn.Name] = fn
+		}
+	}
+
+	// ProcessEntity calls GetEntity and helper
+	processEntity := findFunc(analysis.Functions, "ProcessEntity")
+	if processEntity == nil {
+		t.Fatal("ProcessEntity not found")
+	}
+
+	called := FindCalledFunctions(*processEntity, pkg)
+	calledNames := make(map[string]bool)
+	for _, fn := range called {
+		calledNames[fn.Name] = true
+	}
+
+	t.Logf("ProcessEntity calls: %v", calledNames)
+
+	if !calledNames["helper"] {
+		t.Error("ProcessEntity should call helper")
+	}
+	if !calledNames["GetEntity"] {
+		t.Error("ProcessEntity should call GetEntity")
+	}
+}
+
+func findType(types []TypeInfo, name string) *TypeInfo {
+	for i := range types {
+		if types[i].Name == name {
+			return &types[i]
+		}
+	}
+	return nil
+}
+
+func findFunc(funcs []FuncInfo, name string) *FuncInfo {
+	for i := range funcs {
+		if funcs[i].Name == name {
+			return &funcs[i]
+		}
+	}
+	return nil
+}
