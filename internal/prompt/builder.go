@@ -217,6 +217,88 @@ func buildFixPrompt(previousCode string, errors string, attempt int) string {
 	return sb.String()
 }
 
+// CoverageGapRequest — данные для догенерации тестов по непокрытым строкам.
+type CoverageGapRequest struct {
+	TestGenRequest                  // базовый запрос с функциями
+	ExistingTestCode string        // текущий код тестов
+	UncoveredLines   []int         // непокрытые строки
+	CurrentCoverage  float64       // текущий diff coverage (%)
+	Iteration        int           // номер итерации догенерации
+}
+
+// BuildCoverageGapMessages формирует промпт для догенерации тестов,
+// покрывающих непокрытые строки кода.
+func BuildCoverageGapMessages(req CoverageGapRequest) []Message {
+	gapPrompt := buildCoverageGapPrompt(req)
+
+	return []Message{
+		{Role: "system", Content: BuildSystemPrompt()},
+		{Role: "user", Content: gapPrompt},
+	}
+}
+
+// buildCoverageGapPrompt формирует промпт для покрытия непокрытых строк.
+func buildCoverageGapPrompt(req CoverageGapRequest) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("## Improve Test Coverage (iteration %d)\n\n", req.Iteration))
+	sb.WriteString(fmt.Sprintf("Package: `%s`, file: `%s`\n\n", req.PackageName, req.FilePath))
+	sb.WriteString(fmt.Sprintf("Current diff coverage: **%.1f%%**. Need to improve it.\n\n", req.CurrentCoverage))
+
+	// Функции с непокрытыми строками
+	sb.WriteString("## Functions with Uncovered Lines\n\n")
+	for _, fn := range req.TargetFuncs {
+		// Определяем непокрытые строки внутри этой функции
+		var uncovInFunc []int
+		for _, line := range req.UncoveredLines {
+			if line >= fn.StartLine && line <= fn.EndLine {
+				uncovInFunc = append(uncovInFunc, line)
+			}
+		}
+		if len(uncovInFunc) == 0 {
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf("### %s\n\n", fn.Name))
+		sb.WriteString(fmt.Sprintf("**Signature:** `%s`\n\n", fn.Signature))
+		sb.WriteString("**Implementation:**\n\n```go\n")
+		sb.WriteString(fn.Body)
+		sb.WriteString("\n```\n\n")
+
+		sb.WriteString(fmt.Sprintf("**Uncovered lines:** %v (relative to file)\n\n", uncovInFunc))
+
+		// Анализ ветвлений
+		branches := analyzeBranches(fn.Body)
+		if len(branches) > 0 {
+			sb.WriteString("**Code branches (focus on uncovered ones):**\n")
+			for _, b := range branches {
+				sb.WriteString(fmt.Sprintf("- %s\n", b))
+			}
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString("---\n\n")
+	}
+
+	// Текущие тесты
+	sb.WriteString("## Existing Tests (MUST PRESERVE)\n\n")
+	sb.WriteString("The test file already has tests. You MUST include ALL of them UNCHANGED.\n")
+	sb.WriteString("Add NEW test cases to cover the uncovered lines listed above.\n\n")
+	sb.WriteString("```go\n")
+	sb.WriteString(req.ExistingTestCode)
+	sb.WriteString("\n```\n\n")
+
+	sb.WriteString("## Instructions\n\n")
+	sb.WriteString("1. Analyze which execution paths lead to the uncovered lines.\n")
+	sb.WriteString("2. Write NEW test cases that exercise those specific paths.\n")
+	sb.WriteString("3. Focus on edge cases, error conditions, and boundary values that weren't tested.\n")
+	sb.WriteString("4. Include ALL existing tests unchanged, then add the new ones.\n")
+	sb.WriteString("5. Return the COMPLETE _test.go file.\n")
+	sb.WriteString("6. Return ONLY code — no explanations, no markdown wrappers.\n")
+
+	return sb.String()
+}
+
 // Message — одно сообщение для LLM API.
 type Message struct {
 	Role    string `json:"role"`
