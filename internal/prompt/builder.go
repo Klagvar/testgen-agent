@@ -18,6 +18,7 @@ type TestGenRequest struct {
 	ExistingTests string              // существующие тесты (если есть)
 	UsedTypes     []analyzer.TypeInfo // типы из пакета, используемые функциями
 	CalledFuncs   []analyzer.FuncInfo // вызываемые функции из пакета (кросс-файловые)
+	CustomPrompt  string              // дополнительные инструкции из .testgen.yml
 }
 
 // BuildSystemPrompt формирует системный промпт — инструкции для LLM.
@@ -251,8 +252,12 @@ func analyzeBranches(body string) []string {
 
 // BuildMessages формирует массив сообщений для LLM API.
 func BuildMessages(req TestGenRequest) []Message {
+	systemPrompt := BuildSystemPrompt()
+	if req.CustomPrompt != "" {
+		systemPrompt += "\n\n## Additional project-specific instructions:\n" + req.CustomPrompt
+	}
 	return []Message{
-		{Role: "system", Content: BuildSystemPrompt()},
+		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: BuildUserPrompt(req)},
 	}
 }
