@@ -8,10 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"time"
+
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
 	"github.com/gizatulin/testgen-agent/internal/coverage"
 	"github.com/gizatulin/testgen-agent/internal/diff"
+	ghub "github.com/gizatulin/testgen-agent/internal/github"
 	"github.com/gizatulin/testgen-agent/internal/llm"
+	"github.com/gizatulin/testgen-agent/internal/merger"
+	"github.com/gizatulin/testgen-agent/internal/mutation"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
 	"github.com/gizatulin/testgen-agent/internal/pruner"
 	"github.com/gizatulin/testgen-agent/internal/validator"
@@ -35,6 +40,10 @@ func main() {
 	noValidate := flag.Bool("no-validate", false, "Skip test validation")
 	coverageTarget := flag.Float64("coverage", coverageThreshold, "Target diff coverage (%)")
 	noCoverage := flag.Bool("no-coverage", false, "Skip diff coverage analysis")
+	ghToken := flag.String("github-token", "", "GitHub token for PR comments (or GITHUB_TOKEN env)")
+	ghRepo := flag.String("github-repo", "", "GitHub repo (owner/repo)")
+	prNumber := flag.Int("pr-number", 0, "Pull request number for comment")
+	mutationTest := flag.Bool("mutation", false, "Run mutation testing after test generation")
 
 	flag.Parse()
 
@@ -73,6 +82,9 @@ func main() {
 	totalAttempted := 0
 	totalGenerated := 0
 	totalValidated := 0
+	startTime := time.Now()
+
+	var fileReports []ghub.FileReport
 
 	// ─── Step 3: For each .go file — AST analysis + test generation ───
 	for _, f := range files {
@@ -87,12 +99,16 @@ func main() {
 
 		fullPath := filepath.Join(*repoPath, f.NewPath)
 
-		// AST analysis
+		// AST analysis — single file
 		analysis, err := analyzer.AnalyzeFile(fullPath)
 		if err != nil {
 			fmt.Printf("     ⚠️  AST analysis failed: %v\n\n", err)
 			continue
 		}
+
+		// Package-level analysis (types, cross-file functions)
+		pkgDir := filepath.Dir(fullPath)
+		pkgAnalysis, pkgErr := analyzer.AnalyzePackage(pkgDir)
 
 		affectedFuncs := analyzer.FindFunctionsByLines(analysis, changedLines)
 		if len(affectedFuncs) == 0 {
@@ -106,6 +122,49 @@ func main() {
 		}
 		totalAttempted++
 
+		// Collect used types and called functions
+		var usedTypes []analyzer.TypeInfo
+		var calledFuncs []analyzer.FuncInfo
+
+		if pkgErr == nil && pkgAnalysis != nil {
+			// Collect all types used by any affected function
+			seenTypes := make(map[string]bool)
+			for _, fn := range affectedFuncs {
+				for _, ti := range analyzer.FindUsedTypes(fn, pkgAnalysis.AllTypes) {
+					if !seenTypes[ti.Name] {
+						usedTypes = append(usedTypes, ti)
+						seenTypes[ti.Name] = true
+					}
+				}
+			}
+
+			// Collect cross-file called functions
+			seenFuncs := make(map[string]bool)
+			for _, fn := range affectedFuncs {
+				for _, called := range analyzer.FindCalledFunctions(fn, pkgAnalysis) {
+					if !seenFuncs[called.Name] {
+						calledFuncs = append(calledFuncs, called)
+						seenFuncs[called.Name] = true
+					}
+				}
+			}
+
+			if len(usedTypes) > 0 {
+				typeNames := make([]string, len(usedTypes))
+				for i, t := range usedTypes {
+					typeNames[i] = t.Name
+				}
+				fmt.Printf("     📦 Types: %s\n", strings.Join(typeNames, ", "))
+			}
+			if len(calledFuncs) > 0 {
+				funcNames := make([]string, len(calledFuncs))
+				for i, f := range calledFuncs {
+					funcNames[i] = f.Name
+				}
+				fmt.Printf("     🔗 Dependencies: %s\n", strings.Join(funcNames, ", "))
+			}
+		}
+
 		// Check for existing tests
 		existingTests := readExistingTests(fullPath)
 
@@ -116,6 +175,8 @@ func main() {
 			Imports:       analysis.Imports,
 			TargetFuncs:   affectedFuncs,
 			ExistingTests: existingTests,
+			UsedTypes:     usedTypes,
+			CalledFuncs:   calledFuncs,
 		}
 
 		messages := prompt.BuildMessages(req)
@@ -169,6 +230,23 @@ func main() {
 			generatedCode = result.Content
 			fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
 				result.PromptTokens, result.CompletionTokens)
+
+			// ─── AST Merge: preserve existing tests ───
+			if existingTests != "" {
+				mergeResult, mergeErr := merger.Merge(existingTests, generatedCode)
+				if mergeErr != nil {
+					fmt.Printf("     ⚠️  AST merge failed, using raw LLM output: %v\n", mergeErr)
+				} else {
+					generatedCode = mergeResult.Code
+					if len(mergeResult.Added) > 0 {
+						fmt.Printf("     🔀 Merged: +%d new funcs", len(mergeResult.Added))
+						if len(mergeResult.Skipped) > 0 {
+							fmt.Printf(", %d existing preserved", len(mergeResult.Skipped))
+						}
+						fmt.Println()
+					}
+				}
+			}
 
 			// Save file
 			if err := os.MkdirAll(filepath.Dir(testFilePath), 0755); err != nil {
@@ -267,20 +345,112 @@ func main() {
 		}
 
 		// ─── Step 6: Diff Coverage Analysis ───
-		if *noValidate || *noCoverage || *dryRun {
-			continue
+		var fileDiffCov float64
+		if !*noValidate && !*noCoverage && !*dryRun {
+			fileDiffCov = runCoverageLoop(
+				client, cfg, req, testFilePath, fullPath, *repoPath,
+				changedLines, affectedFuncs, *coverageTarget,
+			)
 		}
 
-		// Запускаем coverage-guided iteration
-		runCoverageLoop(
-			client, cfg, req, testFilePath, fullPath, *repoPath,
-			changedLines, affectedFuncs, *coverageTarget,
-		)
+		// ─── Step 7: Mutation Testing (optional) ───
+		if *mutationTest && success && !*dryRun {
+			fmt.Printf("     🧬 Running mutation testing...\n")
+			funcNamesForMut := make([]string, len(affectedFuncs))
+			for i, fn := range affectedFuncs {
+				funcNamesForMut[i] = fn.Name
+			}
+
+			moduleRoot := findModuleRoot(filepath.Dir(fullPath))
+			if moduleRoot != "" {
+				mutResult, mutErr := mutation.RunMutationTests(fullPath, funcNamesForMut, moduleRoot)
+				if mutErr != nil {
+					fmt.Printf("     ⚠️  Mutation testing failed: %v\n", mutErr)
+				} else {
+					fmt.Printf("     🧬 Mutation Score: %.1f%% (%d killed / %d total, %d survived)\n",
+						mutResult.MutationScore, mutResult.Killed, mutResult.Total, mutResult.Survived)
+					if mutResult.Survived > 0 {
+						for _, m := range mutResult.Mutants {
+							if !m.Killed && m.Error == "" {
+								fmt.Printf("        ⚠️  Survived: %s:%d  %s → %s (func %s)\n",
+									filepath.Base(m.File), m.Line, m.Original, m.Replacement, m.FuncName)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Collect file report
+		funcNames := make([]string, len(affectedFuncs))
+		for i, fn := range affectedFuncs {
+			funcNames[i] = fn.Name
+		}
+
+		status := "failed"
+		if success {
+			status = "success"
+			if fileDiffCov < *coverageTarget && fileDiffCov > 0 {
+				status = "partial"
+			}
+		}
+
+		fileReports = append(fileReports, ghub.FileReport{
+			File:         f.NewPath,
+			Functions:    funcNames,
+			TestsTotal:   totalGenerated,
+			TestsPassed:  totalValidated,
+			DiffCoverage: fileDiffCov,
+			Status:       status,
+		})
 	}
 
 	// Summary
 	fmt.Println("═══════════════════════════════════")
 	fmt.Printf("📊 Total: generated %d, validated %d\n", totalGenerated, totalValidated)
+
+	// ─── Post PR Comment ───
+	ghTokenVal := resolveEnv(*ghToken, "GITHUB_TOKEN")
+	ghRepoVal := resolveEnv(*ghRepo, "GITHUB_REPOSITORY")
+	prNum := resolvePRNumber(*prNumber)
+
+	if ghTokenVal != "" && ghRepoVal != "" && prNum > 0 {
+		parts := strings.SplitN(ghRepoVal, "/", 2)
+		if len(parts) == 2 {
+			modelName := *model
+			if modelName == "" {
+				modelName = "gpt-4o-mini"
+			}
+
+			report := ghub.Report{
+				Files:          fileReports,
+				TotalGenerated: totalGenerated,
+				TotalValidated: totalValidated,
+				Model:          modelName,
+				Duration:       time.Since(startTime),
+			}
+
+			// Calculate average diff coverage
+			var totalCov float64
+			covCount := 0
+			for _, fr := range fileReports {
+				if fr.DiffCoverage > 0 {
+					totalCov += fr.DiffCoverage
+					covCount++
+				}
+			}
+			if covCount > 0 {
+				report.TotalDiffCov = totalCov / float64(covCount)
+			}
+
+			commenter := ghub.NewCommenter(ghTokenVal, parts[0], parts[1], prNum)
+			if err := commenter.PostReport(report); err != nil {
+				fmt.Printf("⚠️  Failed to post PR comment: %v\n", err)
+			} else {
+				fmt.Printf("💬 Report posted to PR #%d\n", prNum)
+			}
+		}
+	}
 
 	if totalAttempted > 0 && totalValidated == 0 {
 		os.Exit(2)
@@ -291,6 +461,7 @@ func main() {
 }
 
 // runCoverageLoop запускает итеративную догенерацию тестов на основе diff coverage.
+// Возвращает итоговый diff coverage %.
 func runCoverageLoop(
 	client *llm.Client,
 	cfg llm.Config,
@@ -301,15 +472,17 @@ func runCoverageLoop(
 	changedLines []int,
 	affectedFuncs []analyzer.FuncInfo,
 	target float64,
-) {
+) float64 {
 	// Определяем модульный корень и директорию пакета
 	pkgDir := filepath.Dir(sourceFilePath)
 	moduleRoot := findModuleRoot(pkgDir)
 
 	if moduleRoot == "" {
 		fmt.Printf("     ⚠️  Cannot find go.mod for coverage analysis\n")
-		return
+		return 0
 	}
+
+	var lastCoverage float64
 
 	for iter := 1; iter <= maxCoverageRetries; iter++ {
 		fmt.Printf("\n     📊 Coverage analysis (iteration %d/%d)...\n", iter, maxCoverageRetries)
@@ -321,33 +494,34 @@ func runCoverageLoop(
 			if testOutput != "" {
 				fmt.Printf("     📋 Output: %s\n", truncate(testOutput, 200))
 			}
-			return
+			return lastCoverage
 		}
 
 		// Parse coverage profile
 		profileData, err := os.ReadFile(coverFile)
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot read coverage profile: %v\n", err)
-			return
+			return lastCoverage
 		}
 		defer os.Remove(coverFile)
 
 		blocks, err := coverage.ParseProfile(string(profileData))
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot parse coverage profile: %v\n", err)
-			return
+			return lastCoverage
 		}
 
 		// Calculate diff coverage
 		sourceFile := filepath.Base(sourceFilePath)
 		dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks)
+		lastCoverage = dcResult.Coverage
 
 		fmt.Printf("     📈 Diff coverage: %.1f%% (%d/%d changed lines covered)\n",
 			dcResult.Coverage, len(dcResult.CoveredLines), len(dcResult.ChangedLines))
 
 		if dcResult.Coverage >= target {
 			fmt.Printf("     ✅ Coverage target reached (%.1f%% >= %.1f%%)\n", dcResult.Coverage, target)
-			return
+			return lastCoverage
 		}
 
 		fmt.Printf("     📉 Below target (%.1f%% < %.1f%%), uncovered lines: %v\n",
@@ -355,14 +529,14 @@ func runCoverageLoop(
 
 		if len(dcResult.UncoveredLines) == 0 {
 			fmt.Printf("     ℹ️  No specific uncovered lines to target\n")
-			return
+			return lastCoverage
 		}
 
 		// Read current test file
 		currentTests, err := os.ReadFile(testFilePath)
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot read test file: %v\n", err)
-			return
+			return lastCoverage
 		}
 
 		// Build coverage gap prompt
@@ -381,7 +555,7 @@ func runCoverageLoop(
 		result, err := client.Generate(gapMessages)
 		if err != nil {
 			fmt.Printf("     ❌ LLM error during coverage iteration: %v\n", err)
-			return
+			return lastCoverage
 		}
 
 		fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
@@ -390,7 +564,7 @@ func runCoverageLoop(
 		// Save and validate
 		if err := os.WriteFile(testFilePath, []byte(result.Content), 0644); err != nil {
 			fmt.Printf("     ❌ Cannot write file: %v\n", err)
-			return
+			return lastCoverage
 		}
 
 		fmt.Printf("     🔬 Validating...\n")
@@ -416,23 +590,25 @@ func runCoverageLoop(
 	coverFile, _, err := coverage.RunCoverage(moduleRoot, pkgDir)
 	if err != nil {
 		fmt.Printf("     ⚠️  Final coverage run failed: %v\n", err)
-		return
+		return lastCoverage
 	}
 	profileData, err := os.ReadFile(coverFile)
 	if err != nil {
-		return
+		return lastCoverage
 	}
 	os.Remove(coverFile)
 
 	blocks, err := coverage.ParseProfile(string(profileData))
 	if err != nil {
-		return
+		return lastCoverage
 	}
 
 	sourceFile := filepath.Base(sourceFilePath)
 	dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks)
+	lastCoverage = dcResult.Coverage
 	fmt.Printf("     📈 Final diff coverage: %.1f%% (%d/%d lines)\n",
 		dcResult.Coverage, len(dcResult.CoveredLines), len(dcResult.ChangedLines))
+	return lastCoverage
 }
 
 // findModuleRoot ищет go.mod вверх по дереву каталогов.
@@ -504,6 +680,30 @@ func buildTestFilePath(goFilePath, outDir string) string {
 	}
 
 	return filepath.Join(filepath.Dir(goFilePath), testFileName)
+}
+
+// resolveEnv возвращает flagVal если не пусто, иначе os.Getenv(envKey).
+func resolveEnv(flagVal, envKey string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return os.Getenv(envKey)
+}
+
+// resolvePRNumber извлекает номер PR из флага или переменных окружения.
+func resolvePRNumber(flagVal int) int {
+	if flagVal > 0 {
+		return flagVal
+	}
+	// GitHub Actions: GITHUB_EVENT_PATH содержит JSON с номером PR
+	// Но проще через env var, которую workflow передаёт
+	prStr := os.Getenv("TESTGEN_PR_NUMBER")
+	if prStr != "" {
+		var n int
+		fmt.Sscanf(prStr, "%d", &n)
+		return n
+	}
+	return 0
 }
 
 // buildLLMConfig формирует конфигурацию LLM-клиента из CLI-флагов и env.
