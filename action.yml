@@ -1,0 +1,72 @@
+# GitHub Action definition для testgen-agent.
+# Подключается к любому Go-репозиторию как reusable action.
+name: 'Testgen Agent'
+description: 'AI-агент для автоматической генерации Go unit-тестов на основе diff изменений'
+author: 'gizatulin'
+
+inputs:
+  api-key:
+    description: 'API-ключ LLM (OpenAI, OpenRouter, и т.д.). Для Ollama не нужен.'
+    required: false
+  api-url:
+    description: 'URL LLM API. По умолчанию OpenAI. Для Ollama: http://host.docker.internal:11434/v1'
+    required: false
+    default: 'https://api.openai.com/v1'
+  model:
+    description: 'Модель LLM (например gpt-4o-mini, qwen2.5-coder:14b)'
+    required: false
+    default: 'gpt-4o-mini'
+  base-branch:
+    description: 'Базовая ветка для сравнения (обычно main или master)'
+    required: false
+    default: 'main'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+
+    - name: Install goimports
+      shell: bash
+      run: go install golang.org/x/tools/cmd/goimports@latest
+
+    - name: Build testgen-agent
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: go build -o $RUNNER_TEMP/testgen-agent ./cmd/agent/
+
+    - name: Fetch base branch
+      shell: bash
+      run: git fetch origin ${{ inputs.base-branch }} --depth=1 || true
+
+    - name: Run testgen-agent
+      shell: bash
+      env:
+        TESTGEN_API_KEY: ${{ inputs.api-key }}
+        TESTGEN_API_URL: ${{ inputs.api-url }}
+        TESTGEN_MODEL: ${{ inputs.model }}
+      run: |
+        $RUNNER_TEMP/testgen-agent \
+          --repo . \
+          --base origin/${{ inputs.base-branch }}
+
+    - name: Check for generated tests
+      shell: bash
+      id: check
+      run: |
+        if git diff --name-only | grep -q '_test.go$'; then
+          echo "has_tests=true" >> $GITHUB_OUTPUT
+          echo "📝 Сгенерированы новые тесты:"
+          git diff --name-only | grep '_test.go$'
+        else
+          echo "has_tests=false" >> $GITHUB_OUTPUT
+          echo "ℹ️ Новые тесты не были сгенерированы"
+        fi
+
+    - name: Run generated tests
+      if: steps.check.outputs.has_tests == 'true'
+      shell: bash
+      run: go test ./... -v -count=1
