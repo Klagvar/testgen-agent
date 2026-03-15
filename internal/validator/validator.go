@@ -4,6 +4,7 @@ package validator
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,23 @@ func FormatFile(filePath string) error {
 	return nil
 }
 
+// findModuleRoot ищет ближайший go.mod вверх от директории.
+// Возвращает директорию с go.mod или пустую строку.
+func findModuleRoot(dir string) string {
+	current := dir
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return ""
+}
+
 // Validate проверяет сгенерированный тест-файл.
 // repoDir — путь к репозиторию, testFile — путь к файлу тестов.
 func Validate(repoDir string, testFile string) *Result {
@@ -65,11 +83,19 @@ func Validate(repoDir string, testFile string) *Result {
 	// Шаг 0: Автоформатирование (goimports фиксит импорты автоматически)
 	_ = FormatFile(testFile)
 
-	// Определяем пакет (директорию) тест-файла относительно репозитория
+	// Определяем директорию тест-файла
 	testDir := filepath.Dir(testFile)
 
+	// Ищем корень Go-модуля для этого тест-файла.
+	// Если testdata/sample-project имеет свой go.mod — используем его,
+	// а не go.mod основного проекта.
+	moduleRoot := findModuleRoot(testDir)
+	if moduleRoot == "" {
+		moduleRoot = repoDir
+	}
+
 	// Шаг 1: Проверяем компиляцию
-	compileErr := runGoCommand(repoDir, testDir, "build")
+	compileErr := runGoCommand(moduleRoot, testDir, "build")
 	if compileErr != "" {
 		result.CompileOK = false
 		result.CompileError = compileErr
@@ -79,7 +105,7 @@ func Validate(repoDir string, testFile string) *Result {
 	result.CompileOK = true
 
 	// Шаг 2: Запускаем тесты
-	testOutput, testErr := runGoTest(repoDir, testDir)
+	testOutput, testErr := runGoTest(moduleRoot, testDir)
 	result.TestOutput = testOutput
 	result.Duration = time.Since(start)
 
@@ -99,17 +125,20 @@ func Validate(repoDir string, testFile string) *Result {
 }
 
 // runGoCommand запускает go <command> в указанной директории.
-func runGoCommand(repoDir, pkgDir, command string) string {
-	// Определяем относительный путь пакета
-	relPkg, err := filepath.Rel(repoDir, pkgDir)
+func runGoCommand(moduleRoot, pkgDir, command string) string {
+	// Определяем относительный путь пакета от корня модуля
+	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
 		relPkg = "."
 	}
 	// Преобразуем к формату Go-пакета: ./path/to/pkg
 	pkgPath := "./" + filepath.ToSlash(relPkg)
+	if pkgPath == "./" {
+		pkgPath = "."
+	}
 
 	cmd := exec.Command("go", command, pkgPath)
-	cmd.Dir = repoDir
+	cmd.Dir = moduleRoot
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -119,15 +148,18 @@ func runGoCommand(repoDir, pkgDir, command string) string {
 }
 
 // runGoTest запускает go test и возвращает вывод и ошибку.
-func runGoTest(repoDir, pkgDir string) (output string, errMsg string) {
-	relPkg, err := filepath.Rel(repoDir, pkgDir)
+func runGoTest(moduleRoot, pkgDir string) (output string, errMsg string) {
+	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
 		relPkg = "."
 	}
 	pkgPath := "./" + filepath.ToSlash(relPkg)
+	if pkgPath == "./" {
+		pkgPath = "."
+	}
 
 	cmd := exec.Command("go", "test", "-v", "-count=1", "-timeout", "30s", pkgPath)
-	cmd.Dir = repoDir
+	cmd.Dir = moduleRoot
 
 	out, err := cmd.CombinedOutput()
 	outputStr := string(out)
