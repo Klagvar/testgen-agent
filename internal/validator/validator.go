@@ -22,6 +22,10 @@ type Result struct {
 	TestOutput string // вывод go test
 	TestError  string // ошибки при запуске тестов
 
+	// Race detector
+	HasRaces    bool   // обнаружены data races
+	RaceDetails string // детали data race
+
 	// Статистика
 	Passed   int           // количество прошедших тестов
 	Failed   int           // количество упавших тестов
@@ -40,6 +44,10 @@ func (r *Result) Summary() string {
 	}
 	if !r.TestsOK {
 		return fmt.Sprintf("⚠️  Тесты упали (%d passed, %d failed):\n%s", r.Passed, r.Failed, r.TestError)
+	}
+	if r.HasRaces {
+		return fmt.Sprintf("⚠️  Tests passed but DATA RACE detected (%d passed, %s):\n%s",
+			r.Passed, r.Duration, r.RaceDetails)
 	}
 	return fmt.Sprintf("✅ Все тесты прошли (%d passed, %s)", r.Passed, r.Duration)
 }
@@ -122,6 +130,105 @@ func Validate(repoDir string, testFile string) *Result {
 	result.Failed = countTests(testOutput, "FAIL")
 
 	return result
+}
+
+// ValidateWithRace проверяет тест-файл с включённым детектором гонок данных.
+// Вызывает go test -race -v.
+func ValidateWithRace(repoDir string, testFile string) *Result {
+	result := &Result{}
+	start := time.Now()
+
+	_ = FormatFile(testFile)
+
+	testDir := filepath.Dir(testFile)
+	moduleRoot := findModuleRoot(testDir)
+	if moduleRoot == "" {
+		moduleRoot = repoDir
+	}
+
+	// Compile check
+	compileErr := runGoCommand(moduleRoot, testDir, "build")
+	if compileErr != "" {
+		result.CompileOK = false
+		result.CompileError = compileErr
+		result.Duration = time.Since(start)
+		return result
+	}
+	result.CompileOK = true
+
+	// Run tests with -race
+	testOutput, testErr := runGoTestRace(moduleRoot, testDir)
+	result.TestOutput = testOutput
+	result.Duration = time.Since(start)
+
+	// Check for data races
+	if strings.Contains(testOutput, "WARNING: DATA RACE") {
+		result.HasRaces = true
+		result.RaceDetails = extractRaceDetails(testOutput)
+	}
+
+	if testErr == "" {
+		result.TestsOK = true
+		result.Passed = countTests(testOutput, "PASS")
+		return result
+	}
+
+	result.TestsOK = false
+	result.TestError = testErr
+	result.Passed = countTests(testOutput, "PASS")
+	result.Failed = countTests(testOutput, "FAIL")
+
+	return result
+}
+
+// runGoTestRace запускает go test -race и возвращает вывод.
+func runGoTestRace(moduleRoot, pkgDir string) (output string, errMsg string) {
+	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
+	if err != nil {
+		relPkg = "."
+	}
+	pkgPath := "./" + filepath.ToSlash(relPkg)
+	if pkgPath == "./" {
+		pkgPath = "."
+	}
+
+	cmd := exec.Command("go", "test", "-race", "-v", "-count=1", "-timeout", "60s", pkgPath)
+	cmd.Dir = moduleRoot
+
+	out, err := cmd.CombinedOutput()
+	outputStr := string(out)
+
+	if err != nil {
+		return outputStr, extractTestErrors(outputStr)
+	}
+	return outputStr, ""
+}
+
+// extractRaceDetails извлекает информацию о data race из вывода go test -race.
+func extractRaceDetails(output string) string {
+	var details []string
+	lines := strings.Split(output, "\n")
+	inRace := false
+
+	for _, line := range lines {
+		if strings.Contains(line, "WARNING: DATA RACE") {
+			inRace = true
+		}
+		if inRace {
+			details = append(details, line)
+			// Race block ends with empty line or goroutine info
+			if strings.TrimSpace(line) == "" && len(details) > 3 {
+				inRace = false
+			}
+		}
+	}
+
+	if len(details) > 30 {
+		details = details[:30]
+		details = append(details, "... (truncated)")
+	}
+
+	return strings.Join(details, "\n")
 }
 
 // runGoCommand запускает go <command> в указанной директории.

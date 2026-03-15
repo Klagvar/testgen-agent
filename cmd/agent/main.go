@@ -51,6 +51,7 @@ func main() {
 	mutationTest := flag.Bool("mutation", false, "Run mutation testing after test generation")
 	noCache := flag.Bool("no-cache", false, "Disable function-level caching")
 	noSmartDiff := flag.Bool("no-smart-diff", false, "Disable git-based function comparison")
+	raceDetection := flag.Bool("race", false, "Enable race detection for concurrent tests")
 	reportFormat := flag.String("report", "", "Generate report: html, json (empty = no report)")
 
 	flag.Parse()
@@ -76,7 +77,7 @@ func main() {
 
 	// Apply config defaults (CLI flags take priority)
 	applyConfigDefaults(projectCfg, model, baseURL, apiKey, outDir,
-		coverageTarget, noValidate, noCoverage, noCache, noSmartDiff, mutationTest)
+		coverageTarget, noValidate, noCoverage, noCache, noSmartDiff, mutationTest, raceDetection)
 
 	fmt.Printf("📂 Repository: %s\n", *repoPath)
 	fmt.Printf("🔀 Base branch: %s\n\n", *baseBranch)
@@ -276,16 +277,35 @@ func main() {
 		// Check for existing tests
 		existingTests := readExistingTests(fullPath)
 
+		// ─── Concurrency detection ───
+		useRace := *raceDetection || projectCfg.Race
+		var concInfos map[string]analyzer.ConcurrencyInfo
+		hasConcurrentFuncs := false
+
+		if useRace {
+			concInfos = make(map[string]analyzer.ConcurrencyInfo)
+			for _, fn := range affectedFuncs {
+				ci := analyzer.DetectConcurrency(fn, usedTypes)
+				if ci.IsConcurrent {
+					concInfos[fn.Name] = ci
+					hasConcurrentFuncs = true
+					fmt.Printf("     ⚡ %s: concurrent (%s)\n", fn.Name, strings.Join(ci.Patterns, ", "))
+				}
+			}
+		}
+
 		// Build prompt
 		req := prompt.TestGenRequest{
-			PackageName:   analysis.Package,
-			FilePath:      f.NewPath,
-			Imports:       analysis.Imports,
-			TargetFuncs:   affectedFuncs,
-			ExistingTests: existingTests,
-			UsedTypes:     usedTypes,
-			CalledFuncs:   calledFuncs,
-			CustomPrompt:  projectCfg.CustomPrompt,
+			PackageName:      analysis.Package,
+			FilePath:         f.NewPath,
+			Imports:          analysis.Imports,
+			TargetFuncs:      affectedFuncs,
+			ExistingTests:    existingTests,
+			UsedTypes:        usedTypes,
+			CalledFuncs:      calledFuncs,
+			CustomPrompt:     projectCfg.CustomPrompt,
+			ConcurrencyInfos: concInfos,
+			RaceDetection:    useRace,
 		}
 
 		messages := prompt.BuildMessages(req)
@@ -388,6 +408,20 @@ func main() {
 
 			if valResult.IsValid() {
 				fmt.Printf("     %s\n", valResult.Summary())
+
+				// Race detection pass (if enabled and concurrent functions detected)
+				if useRace && hasConcurrentFuncs {
+					fmt.Printf("     🏁 Running race detector...\n")
+					raceResult := validator.ValidateWithRace(*repoPath, testFilePath)
+					if raceResult.HasRaces {
+						fmt.Printf("     ⚠️  DATA RACE detected:\n%s\n", raceResult.RaceDetails)
+					} else if raceResult.IsValid() {
+						fmt.Printf("     ✅ Race detector: no races found\n")
+					} else {
+						fmt.Printf("     ⚠️  Race test failed: %s\n", raceResult.TestError)
+					}
+				}
+
 				fmt.Printf("     💾 Tests saved: %s\n\n", testFilePath)
 				totalGenerated++
 				totalValidated++
@@ -945,7 +979,7 @@ func applyConfigDefaults(
 	cfg *config.Config,
 	model, baseURL, apiKey, outDir *string,
 	coverageTarget *float64,
-	noValidate, noCoverage, noCache, noSmartDiff, mutationTest *bool,
+	noValidate, noCoverage, noCache, noSmartDiff, mutationTest, raceDetection *bool,
 ) {
 	// Только если флаг не задан — берём из конфига
 	if *model == "" && cfg.Model != "" {
@@ -976,6 +1010,9 @@ func applyConfigDefaults(
 	}
 	if cfg.NoSmartDiff && !*noSmartDiff {
 		*noSmartDiff = true
+	}
+	if cfg.Race && !*raceDetection {
+		*raceDetection = true
 	}
 
 	// Coverage threshold: use config if CLI uses default value
