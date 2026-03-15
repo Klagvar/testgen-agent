@@ -16,6 +16,9 @@ cover.out
 # Agent cache
 .testgen-cache.json
 
+# Generated reports
+testgen-report-*.html
+
 # Go workspace
 go.sum
 
