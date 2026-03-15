@@ -210,6 +210,12 @@ func main() {
 	// Итоги
 	fmt.Println("═══════════════════════════════════")
 	fmt.Printf("📊 Итого: сгенерировано %d, валидировано %d\n", totalGenerated, totalValidated)
+
+	// Выходим с кодом 0 только если все тесты прошли валидацию
+	// или не было файлов для генерации
+	if totalGenerated > 0 && totalValidated == 0 {
+		os.Exit(2) // Все тесты невалидны
+	}
 }
 
 // lastValidationError хранит последнюю ошибку валидации для retry.
