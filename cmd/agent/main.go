@@ -14,6 +14,7 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/cache"
 	"github.com/gizatulin/testgen-agent/internal/config"
 	"github.com/gizatulin/testgen-agent/internal/coverage"
+	"github.com/gizatulin/testgen-agent/internal/dedup"
 	"github.com/gizatulin/testgen-agent/internal/diff"
 	"github.com/gizatulin/testgen-agent/internal/gitdiff"
 	ghub "github.com/gizatulin/testgen-agent/internal/github"
@@ -354,6 +355,13 @@ func main() {
 						fmt.Println()
 					}
 				}
+			}
+
+			// ─── Deduplication: remove duplicate test cases ───
+			dedupResult, dedupErr := dedup.Dedup(generatedCode)
+			if dedupErr == nil && dedupResult.Removed > 0 {
+				generatedCode = dedupResult.Code
+				fmt.Printf("     🧹 Dedup: removed %d duplicate case(s)\n", dedupResult.Removed)
 			}
 
 			// Save file
