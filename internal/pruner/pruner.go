@@ -1,0 +1,334 @@
+// Package pruner анализирует вывод go test и удаляет
+// падающие тесты из сгенерированного файла.
+//
+// Стратегия:
+// 1. Парсим вывод go test → определяем имена падающих тестов
+// 2. Для table-driven тестов: определяем падающие sub-test имена
+// 3. AST: удаляем падающие тест-функции целиком или отдельные
+//    записи из test-table, если можно сохранить проходящие кейсы
+// 4. Переформатируем и возвращаем очищенный код
+package pruner
+
+import (
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"regexp"
+	"strings"
+)
+
+// TestResult — результат одного теста.
+type TestResult struct {
+	Name   string // полное имя: TestFoo или TestFoo/sub_case
+	Passed bool
+}
+
+// ParseTestOutput парсит вывод go test -v и возвращает результаты
+// для каждого теста (включая sub-tests).
+func ParseTestOutput(output string) []TestResult {
+	var results []TestResult
+
+	// Паттерны вывода go test -v:
+	// --- PASS: TestFoo (0.00s)
+	// --- FAIL: TestFoo/sub_case (0.00s)
+	passRe := regexp.MustCompile(`--- PASS: (\S+)\s`)
+	failRe := regexp.MustCompile(`--- FAIL: (\S+)\s`)
+
+	for _, match := range passRe.FindAllStringSubmatch(output, -1) {
+		results = append(results, TestResult{Name: match[1], Passed: true})
+	}
+
+	for _, match := range failRe.FindAllStringSubmatch(output, -1) {
+		results = append(results, TestResult{Name: match[1], Passed: false})
+	}
+
+	return results
+}
+
+// FailingTopLevel возвращает имена верхнеуровневых тест-функций,
+// у которых хотя бы один sub-test упал.
+func FailingTopLevel(results []TestResult) []string {
+	failing := make(map[string]bool)
+
+	for _, r := range results {
+		if r.Passed {
+			continue
+		}
+		// TestFoo/bar/baz → TestFoo
+		topLevel := strings.SplitN(r.Name, "/", 2)[0]
+		failing[topLevel] = true
+	}
+
+	var names []string
+	for name := range failing {
+		names = append(names, name)
+	}
+	return names
+}
+
+// FailingSubTests возвращает мапу: TestFuncName → []failingSubTestNames.
+func FailingSubTests(results []TestResult) map[string][]string {
+	failing := make(map[string][]string)
+
+	for _, r := range results {
+		if r.Passed {
+			continue
+		}
+		parts := strings.SplitN(r.Name, "/", 2)
+		if len(parts) != 2 {
+			continue // это top-level fail, не sub-test
+		}
+		topLevel := parts[0]
+		subTest := parts[1]
+		failing[topLevel] = append(failing[topLevel], subTest)
+	}
+
+	return failing
+}
+
+// AllSubTestsFailing проверяет, все ли sub-tests данного top-level теста упали.
+func AllSubTestsFailing(results []TestResult, topLevelName string) bool {
+	totalSubs := 0
+	failedSubs := 0
+
+	for _, r := range results {
+		parts := strings.SplitN(r.Name, "/", 2)
+		if parts[0] != topLevelName || len(parts) < 2 {
+			continue
+		}
+		totalSubs++
+		if !r.Passed {
+			failedSubs++
+		}
+	}
+
+	// Если нет sub-tests, значит top-level тест упал сам
+	if totalSubs == 0 {
+		return true
+	}
+
+	return totalSubs == failedSubs
+}
+
+// PruneResult — результат прунинга.
+type PruneResult struct {
+	Code            string   // очищенный код
+	RemovedFuncs    []string // удалённые тест-функции
+	RemovedSubTests int      // удалённые sub-test кейсы из table-driven тестов
+	KeptTests       int      // сколько тестов осталось
+}
+
+// Prune удаляет падающие тесты из сгенерированного кода.
+// Стратегия:
+// - Если все sub-tests в тест-функции упали → удалить всю функцию
+// - Если только часть sub-tests упала → попробовать удалить
+//   конкретные записи из table-driven теста (композитных литералов)
+// - Если это не table-driven тест → удалить всю функцию
+func Prune(source string, testOutput string) (*PruneResult, error) {
+	results := ParseTestOutput(testOutput)
+
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no test results found in output")
+	}
+
+	// Проверяем, есть ли вообще падающие тесты
+	failingTop := FailingTopLevel(results)
+	if len(failingTop) == 0 {
+		return &PruneResult{Code: source}, nil // всё ок
+	}
+
+	failingSubs := FailingSubTests(results)
+
+	// Парсим AST
+	fset := token.NewFileSet()
+	node, err := parser.ParseFile(fset, "test.go", source, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("parse test file: %w", err)
+	}
+
+	result := &PruneResult{}
+	var declsToRemove []*ast.FuncDecl
+
+	for _, topName := range failingTop {
+		// Находим функцию в AST
+		funcDecl := findFunc(node, topName)
+		if funcDecl == nil {
+			continue
+		}
+
+		if AllSubTestsFailing(results, topName) {
+			// Все sub-tests упали → удаляем всю функцию
+			declsToRemove = append(declsToRemove, funcDecl)
+			result.RemovedFuncs = append(result.RemovedFuncs, topName)
+			continue
+		}
+
+		// Часть sub-tests упала → пробуем удалить из table
+		subs := failingSubs[topName]
+		removed := removeTableCases(fset, funcDecl, subs)
+		result.RemovedSubTests += removed
+
+		if removed == 0 {
+			// Не удалось удалить отдельные кейсы → удаляем всю функцию
+			declsToRemove = append(declsToRemove, funcDecl)
+			result.RemovedFuncs = append(result.RemovedFuncs, topName)
+		}
+	}
+
+	// Удаляем помеченные функции из AST
+	removeFuncs(node, declsToRemove)
+
+	// Считаем оставшиеся тесты
+	for _, decl := range node.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			if strings.HasPrefix(fn.Name.Name, "Test") {
+				result.KeptTests++
+			}
+		}
+	}
+
+	// Форматируем результат
+	var buf strings.Builder
+	if err := format.Node(&buf, fset, node); err != nil {
+		return nil, fmt.Errorf("format pruned code: %w", err)
+	}
+
+	result.Code = buf.String()
+	return result, nil
+}
+
+// findFunc ищет функцию по имени в AST.
+func findFunc(node *ast.File, name string) *ast.FuncDecl {
+	for _, decl := range node.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if fn.Name.Name == name {
+			return fn
+		}
+	}
+	return nil
+}
+
+// removeFuncs удаляет функции из Decls.
+func removeFuncs(node *ast.File, toRemove []*ast.FuncDecl) {
+	removeSet := make(map[*ast.FuncDecl]bool)
+	for _, fn := range toRemove {
+		removeSet[fn] = true
+	}
+
+	var filtered []ast.Decl
+	for _, decl := range node.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && removeSet[fn] {
+			continue
+		}
+		filtered = append(filtered, decl)
+	}
+	node.Decls = filtered
+}
+
+// removeTableCases пытается удалить конкретные sub-test кейсы
+// из table-driven теста. Ищет массив/слайс с composite literals,
+// у которых есть поле "name" совпадающее с именем падающего sub-test.
+//
+// Возвращает количество удалённых кейсов.
+func removeTableCases(fset *token.FileSet, funcDecl *ast.FuncDecl, failingSubs []string) int {
+	if funcDecl.Body == nil {
+		return 0
+	}
+
+	failingSet := make(map[string]bool)
+	for _, name := range failingSubs {
+		failingSet[name] = true
+		// Также нормализуем: go test заменяет пробелы на _
+		failingSet[strings.ReplaceAll(name, "_", " ")] = true
+	}
+
+	removed := 0
+
+	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+		compLit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+
+		// Ищем слайс composite literals (test table)
+		// Проверяем, что это []struct{...}{...} или tests := []struct{...}{...}
+		if len(compLit.Elts) == 0 {
+			return true
+		}
+
+		// Проверяем, что элементы — composite literals с полем "name"
+		var filteredElts []ast.Expr
+		for _, elt := range compLit.Elts {
+			innerLit, ok := elt.(*ast.CompositeLit)
+			if !ok {
+				filteredElts = append(filteredElts, elt)
+				continue
+			}
+
+			caseName := extractTestCaseName(innerLit)
+			if caseName == "" {
+				filteredElts = append(filteredElts, elt)
+				continue
+			}
+
+			// Нормализуем: go test заменяет пробелы на _
+			normalizedName := strings.ReplaceAll(caseName, " ", "_")
+
+			if failingSet[caseName] || failingSet[normalizedName] {
+				removed++
+				continue // пропускаем этот кейс
+			}
+
+			filteredElts = append(filteredElts, elt)
+		}
+
+		if removed > 0 {
+			compLit.Elts = filteredElts
+		}
+
+		return true
+	})
+
+	return removed
+}
+
+// extractTestCaseName извлекает имя тест-кейса из composite literal.
+// Ищет поле "name" или "Name" типа string.
+func extractTestCaseName(lit *ast.CompositeLit) string {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+
+		ident, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		if strings.ToLower(ident.Name) != "name" {
+			continue
+		}
+
+		basicLit, ok := kv.Value.(*ast.BasicLit)
+		if !ok {
+			continue
+		}
+
+		if basicLit.Kind != token.STRING {
+			continue
+		}
+
+		// Убираем кавычки
+		name := strings.Trim(basicLit.Value, "\"`")
+		return name
+	}
+
+	return ""
+}

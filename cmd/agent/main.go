@@ -13,6 +13,7 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/diff"
 	"github.com/gizatulin/testgen-agent/internal/llm"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
+	"github.com/gizatulin/testgen-agent/internal/pruner"
 	"github.com/gizatulin/testgen-agent/internal/validator"
 )
 
@@ -141,6 +142,7 @@ func main() {
 
 		// ─── Generation loop with validation ───
 		var generatedCode string
+		var lastTestOutput string // полный вывод go test -v для прунера
 		success := false
 
 		for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -201,6 +203,7 @@ func main() {
 
 			// Validation failed
 			lastValidationError = valResult.Summary()
+			lastTestOutput = valResult.TestOutput
 			fmt.Printf("     %s\n", valResult.Summary())
 
 			if attempt == maxRetries {
@@ -208,15 +211,59 @@ func main() {
 			}
 		}
 
-		// If validation failed — delete invalid file
+		// If validation failed — try pruning failing tests
 		if !success {
-			if generatedCode != "" {
+			if generatedCode != "" && lastTestOutput != "" {
+				fmt.Printf("     ✂️  Pruning failing tests...\n")
+				pruneResult, pruneErr := pruner.Prune(generatedCode, lastTestOutput)
+
+				if pruneErr != nil {
+					fmt.Printf("     ⚠️  Prune failed: %v\n", pruneErr)
+					os.Remove(testFilePath)
+					fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
+				} else if pruneResult.KeptTests == 0 {
+					fmt.Printf("     ⚠️  All tests failed, nothing to keep\n")
+					os.Remove(testFilePath)
+					fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
+				} else {
+					fmt.Printf("     ✂️  Removed %d functions, %d sub-test cases. Kept %d test functions.\n",
+						len(pruneResult.RemovedFuncs), pruneResult.RemovedSubTests, pruneResult.KeptTests)
+
+					if len(pruneResult.RemovedFuncs) > 0 {
+						fmt.Printf("     🗑️  Removed: %s\n", strings.Join(pruneResult.RemovedFuncs, ", "))
+					}
+
+					// Save pruned code and re-validate
+					if err := os.WriteFile(testFilePath, []byte(pruneResult.Code), 0644); err != nil {
+						fmt.Printf("     ❌ Cannot write pruned file: %v\n", err)
+						os.Remove(testFilePath)
+					} else {
+						fmt.Printf("     🔬 Re-validating pruned tests...\n")
+						valResult := validator.Validate(*repoPath, testFilePath)
+
+						if valResult.IsValid() {
+							fmt.Printf("     %s\n", valResult.Summary())
+							fmt.Printf("     💾 Pruned tests saved: %s\n\n", testFilePath)
+							totalGenerated++
+							totalValidated++
+							success = true
+						} else {
+							fmt.Printf("     ⚠️  Pruned tests still fail: %s\n", valResult.Summary())
+							os.Remove(testFilePath)
+							fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
+						}
+					}
+				}
+			} else if generatedCode == "" {
+				fmt.Printf("     ❌ Failed to generate tests\n\n")
+			} else {
 				os.Remove(testFilePath)
 				fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
-			} else {
-				fmt.Printf("     ❌ Failed to generate tests\n\n")
 			}
-			continue
+
+			if !success {
+				continue
+			}
 		}
 
 		// ─── Step 6: Diff Coverage Analysis ───
