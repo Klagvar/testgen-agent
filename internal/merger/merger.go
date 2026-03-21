@@ -1,7 +1,7 @@
-// Package merger реализует AST-слияние тестов:
-// берёт существующий _test.go файл и сгенерированный код,
-// извлекает только новые тест-функции и вставляет их в конец,
-// объединяя импорты.
+// Package merger implements AST-based test merging:
+// takes an existing _test.go file and generated code,
+// extracts only new test functions and appends them,
+// merging imports.
 package merger
 
 import (
@@ -14,21 +14,21 @@ import (
 	"strings"
 )
 
-// MergeResult — результат слияния.
+// MergeResult holds the merge result.
 type MergeResult struct {
-	Code      string   // итоговый код
-	Added     []string // имена добавленных тест-функций
-	Skipped   []string // имена пропущенных (уже существуют)
+	Code      string   // final code
+	Added     []string // names of added test functions
+	Skipped   []string // names of skipped functions (already exist)
 }
 
-// funcSource — исходный код одной функции.
+// funcSource holds the source code of a single function.
 type funcSource struct {
 	Name   string
-	Source string // исходный код функции
+	Source string // function source code
 }
 
-// Merge объединяет существующий тестовый файл с новыми сгенерированными тестами.
-// Если existing пуст — возвращает generated as-is.
+// Merge combines an existing test file with newly generated tests.
+// If existing is empty, returns generated as-is.
 func Merge(existing, generated string) (*MergeResult, error) {
 	if strings.TrimSpace(existing) == "" {
 		return &MergeResult{Code: generated}, nil
@@ -53,7 +53,7 @@ func Merge(existing, generated string) (*MergeResult, error) {
 
 	result := &MergeResult{}
 
-	// Собираем имена существующих функций
+	// Collect existing function names
 	existingFuncs := make(map[string]bool)
 	for _, decl := range existingFile.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -63,7 +63,7 @@ func Merge(existing, generated string) (*MergeResult, error) {
 		existingFuncs[fn.Name.Name] = true
 	}
 
-	// Собираем импорты из обоих файлов (union)
+	// Collect imports from both files (union)
 	allImports := make(map[string]string) // path -> alias (empty = no alias)
 	for _, imp := range existingFile.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
@@ -84,7 +84,7 @@ func Merge(existing, generated string) (*MergeResult, error) {
 		}
 	}
 
-	// Извлекаем исходный код новых функций из generated текста
+	// Extract source code of new functions from generated text
 	genLines := strings.Split(generated, "\n")
 	var newFuncs []funcSource
 
@@ -99,11 +99,11 @@ func Merge(existing, generated string) (*MergeResult, error) {
 			continue
 		}
 
-		// Извлекаем исходный код функции из generated текста
+		// Extract function source code from generated text
 		startLine := genFset.Position(fn.Pos()).Line
 		endLine := genFset.Position(fn.End()).Line
 
-		// Включаем doc-комментарий если есть
+		// Include doc comment if present
 		if fn.Doc != nil {
 			docStart := genFset.Position(fn.Doc.Pos()).Line
 			if docStart < startLine {
@@ -121,7 +121,7 @@ func Merge(existing, generated string) (*MergeResult, error) {
 		}
 	}
 
-	// Также извлекаем новые top-level var/const/type из generated
+	// Also extract new top-level var/const/type from generated
 	existingTopLevel := collectTopLevelNames(existingFile)
 	var newDecls []string
 
@@ -157,13 +157,13 @@ func Merge(existing, generated string) (*MergeResult, error) {
 		}
 	}
 
-	// Строим итоговый файл
+	// Build the final file
 	var sb strings.Builder
 
 	// Package
 	sb.WriteString(fmt.Sprintf("package %s\n\n", existingFile.Name.Name))
 
-	// Imports (отсортированные)
+	// Imports (sorted)
 	if len(allImports) > 0 {
 		sb.WriteString("import (\n")
 
@@ -187,20 +187,20 @@ func Merge(existing, generated string) (*MergeResult, error) {
 		sb.WriteString(")\n")
 	}
 
-	// Существующий код (без package и imports)
+	// Existing code (without package and imports)
 	existingBody := extractBodyAfterImports(existing, existingFile, fset)
 	if existingBody != "" {
 		sb.WriteString("\n")
 		sb.WriteString(existingBody)
 	}
 
-	// Новые top-level declarations
+	// New top-level declarations
 	for _, decl := range newDecls {
 		sb.WriteString("\n\n")
 		sb.WriteString(decl)
 	}
 
-	// Новые функции
+	// New functions
 	for _, fn := range newFuncs {
 		sb.WriteString("\n\n")
 		sb.WriteString(fn.Source)
@@ -208,10 +208,10 @@ func Merge(existing, generated string) (*MergeResult, error) {
 
 	sb.WriteString("\n")
 
-	// Форматируем через go/format для чистоты
+	// Format via go/format for cleanliness
 	formatted, err := format.Source([]byte(sb.String()))
 	if err != nil {
-		// Если форматирование не удалось — возвращаем как есть
+		// If formatting failed — return as-is
 		result.Code = sb.String()
 		return result, nil
 	}
@@ -220,11 +220,11 @@ func Merge(existing, generated string) (*MergeResult, error) {
 	return result, nil
 }
 
-// extractBodyAfterImports возвращает исходный код файла после package и import.
+// extractBodyAfterImports returns the file source code after package and import.
 func extractBodyAfterImports(src string, file *ast.File, fset *token.FileSet) string {
 	lines := strings.Split(src, "\n")
 
-	// Находим конец импортов
+	// Find end of imports
 	lastImportEnd := 0
 	for _, decl := range file.Decls {
 		genDecl, ok := decl.(*ast.GenDecl)
@@ -237,12 +237,12 @@ func extractBodyAfterImports(src string, file *ast.File, fset *token.FileSet) st
 		}
 	}
 
-	// Если нет импортов, начинаем после package
+	// If no imports, start after package
 	if lastImportEnd == 0 {
 		lastImportEnd = fset.Position(file.Name.End()).Line
 	}
 
-	// Берём всё после импортов
+	// Take everything after imports
 	if lastImportEnd < len(lines) {
 		body := strings.Join(lines[lastImportEnd:], "\n")
 		return strings.TrimLeft(body, "\n\r")
@@ -251,7 +251,7 @@ func extractBodyAfterImports(src string, file *ast.File, fset *token.FileSet) st
 	return ""
 }
 
-// collectTopLevelNames собирает все top-level имена (var, const, type).
+// collectTopLevelNames collects all top-level names (var, const, type).
 func collectTopLevelNames(file *ast.File) map[string]bool {
 	names := make(map[string]bool)
 	for _, decl := range file.Decls {
@@ -273,7 +273,7 @@ func collectTopLevelNames(file *ast.File) map[string]bool {
 	return names
 }
 
-// ExtractNewFuncNames возвращает имена функций из generated, которых нет в existing.
+// ExtractNewFuncNames returns function names from generated that are not in existing.
 func ExtractNewFuncNames(existing, generated string) ([]string, error) {
 	fset := token.NewFileSet()
 

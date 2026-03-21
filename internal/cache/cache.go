@@ -1,7 +1,7 @@
-// Package cache реализует кэширование результатов генерации тестов.
-// Для каждой функции хранится хэш (сигнатура + тело + зависимости).
-// Если при следующем запуске хэш совпадает — функция пропускается,
-// LLM не вызывается, экономятся токены и время.
+// Package cache implements caching of test generation results.
+// For each function, a hash (signature + body + dependencies) is stored.
+// If the hash matches on the next run, the function is skipped,
+// saving LLM tokens and time.
 package cache
 
 import (
@@ -18,23 +18,23 @@ import (
 
 const cacheFileName = ".testgen-cache.json"
 
-// FuncEntry — запись кэша для одной функции.
+// FuncEntry is a cache entry for a single function.
 type FuncEntry struct {
-	Hash           string    `json:"hash"`            // SHA256 от (сигнатура + тело + типы)
-	TestFile       string    `json:"test_file"`       // путь к файлу тестов
-	GeneratedFuncs []string  `json:"generated_funcs"` // имена сгенерированных тест-функций
-	Model          string    `json:"model"`           // модель, которая генерировала
-	Timestamp      time.Time `json:"timestamp"`       // когда сгенерировано
+	Hash           string    `json:"hash"`            // SHA256 of (signature + body + types)
+	TestFile       string    `json:"test_file"`       // path to the test file
+	GeneratedFuncs []string  `json:"generated_funcs"` // names of generated test functions
+	Model          string    `json:"model"`           // model that generated the tests
+	Timestamp      time.Time `json:"timestamp"`       // when generated
 }
 
-// Cache — хранилище кэша. Ключ: "file.go::FuncName".
+// Cache is the cache store. Key: "file.go::FuncName".
 type Cache struct {
 	Version string                `json:"version"`
 	Entries map[string]FuncEntry  `json:"entries"`
-	path    string                // путь к файлу кэша
+	path    string                // path to the cache file
 }
 
-// Load загружает кэш из файла. Если файла нет — возвращает пустой кэш.
+// Load reads the cache from a file. Returns an empty cache if file is missing.
 func Load(repoDir string) *Cache {
 	c := &Cache{
 		Version: "1",
@@ -44,17 +44,17 @@ func Load(repoDir string) *Cache {
 
 	data, err := os.ReadFile(c.path)
 	if err != nil {
-		return c // файла нет — пустой кэш
+		return c // no file — empty cache
 	}
 
 	if err := json.Unmarshal(data, c); err != nil {
-		return c // битый файл — пустой кэш
+		return c // corrupted file — empty cache
 	}
 
 	return c
 }
 
-// Save записывает кэш в файл.
+// Save writes the cache to a file.
 func (c *Cache) Save() error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -64,26 +64,26 @@ func (c *Cache) Save() error {
 	return os.WriteFile(c.path, data, 0644)
 }
 
-// Key формирует ключ кэша для функции в файле.
+// Key builds a cache key for a function in a file.
 func Key(filePath string, funcName string) string {
 	return filepath.Base(filePath) + "::" + funcName
 }
 
-// ComputeHash вычисляет хэш функции на основе её содержимого и зависимостей.
-// Учитывает: сигнатуру, тело, ресивер, типы параметров и возвратов.
+// ComputeHash computes a hash for a function based on its content and dependencies.
+// Considers: signature, body, receiver, parameter and return types.
 func ComputeHash(fn analyzer.FuncInfo, usedTypes []analyzer.TypeInfo) string {
 	h := sha256.New()
 
-	// Сигнатура (включает ресивер, параметры, возвраты)
+	// Signature (includes receiver, parameters, returns)
 	h.Write([]byte(fn.Signature))
 
-	// Тело функции
+	// Function body
 	h.Write([]byte(fn.Body))
 
-	// Ресивер
+	// Receiver
 	h.Write([]byte(fn.Receiver))
 
-	// Типы-зависимости (сортируем для стабильности)
+	// Type dependencies (sorted for stability)
 	typeHashes := make([]string, 0, len(usedTypes))
 	for _, t := range usedTypes {
 		typeHashes = append(typeHashes, t.Name+":"+t.Source)
@@ -96,8 +96,8 @@ func ComputeHash(fn analyzer.FuncInfo, usedTypes []analyzer.TypeInfo) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// Lookup проверяет, есть ли актуальная запись в кэше для функции.
-// Возвращает entry и true если хэш совпадает (можно пропустить генерацию).
+// Lookup checks whether there is a valid cache entry for the function.
+// Returns the entry and true if the hash matches (generation can be skipped).
 func (c *Cache) Lookup(key string, currentHash string) (FuncEntry, bool) {
 	entry, exists := c.Entries[key]
 	if !exists {
@@ -105,23 +105,23 @@ func (c *Cache) Lookup(key string, currentHash string) (FuncEntry, bool) {
 	}
 
 	if entry.Hash != currentHash {
-		return FuncEntry{}, false // хэш изменился — нужна перегенерация
+		return FuncEntry{}, false // hash changed — regeneration needed
 	}
 
 	return entry, true
 }
 
-// Put записывает или обновляет запись в кэше.
+// Put writes or updates a cache entry.
 func (c *Cache) Put(key string, entry FuncEntry) {
 	c.Entries[key] = entry
 }
 
-// Remove удаляет запись из кэша.
+// Remove removes an entry from the cache.
 func (c *Cache) Remove(key string) {
 	delete(c.Entries, key)
 }
 
-// Invalidate удаляет все записи для указанного файла.
+// Invalidate removes all entries for the given file.
 func (c *Cache) Invalidate(filePath string) {
 	base := filepath.Base(filePath)
 	for key := range c.Entries {
@@ -131,10 +131,10 @@ func (c *Cache) Invalidate(filePath string) {
 	}
 }
 
-// Stats возвращает статистику кэша.
+// Stats returns cache statistics.
 func (c *Cache) Stats() (total, expired int) {
 	total = len(c.Entries)
-	cutoff := time.Now().Add(-30 * 24 * time.Hour) // 30 дней
+	cutoff := time.Now().Add(-30 * 24 * time.Hour) // 30 days
 	for _, entry := range c.Entries {
 		if entry.Timestamp.Before(cutoff) {
 			expired++
@@ -143,7 +143,7 @@ func (c *Cache) Stats() (total, expired int) {
 	return
 }
 
-// Prune удаляет записи старше maxAge.
+// Prune removes entries older than maxAge.
 func (c *Cache) Prune(maxAge time.Duration) int {
 	cutoff := time.Now().Add(-maxAge)
 	removed := 0
@@ -156,7 +156,7 @@ func (c *Cache) Prune(maxAge time.Duration) int {
 	return removed
 }
 
-// FilePath возвращает путь к файлу кэша.
+// FilePath returns the path to the cache file.
 func (c *Cache) FilePath() string {
 	return c.path
 }

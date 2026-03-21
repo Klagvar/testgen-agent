@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
 	"time"
 
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
@@ -16,25 +15,27 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/coverage"
 	"github.com/gizatulin/testgen-agent/internal/dedup"
 	"github.com/gizatulin/testgen-agent/internal/diff"
-	"github.com/gizatulin/testgen-agent/internal/gitdiff"
 	ghub "github.com/gizatulin/testgen-agent/internal/github"
 	"github.com/gizatulin/testgen-agent/internal/llm"
 	"github.com/gizatulin/testgen-agent/internal/merger"
-	"github.com/gizatulin/testgen-agent/internal/mutation"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
-	"github.com/gizatulin/testgen-agent/internal/pruner"
 	"github.com/gizatulin/testgen-agent/internal/report"
 	"github.com/gizatulin/testgen-agent/internal/validator"
 )
 
 const (
-	maxRetries         = 3   // максимум попыток исправления ошибок компиляции/тестов
-	maxCoverageRetries = 2   // максимум итераций догенерации по coverage
-	coverageThreshold  = 80.0 // минимальный diff coverage (%)
+	maxRetries         = 3   // max retry attempts for fixing compilation/test errors
+	maxCoverageRetries = 2   // max coverage re-generation iterations
+	coverageThreshold  = 80.0 // minimum diff coverage (%)
 )
 
 func main() {
-	// CLI-флаги
+	// Load .env file (before flag parsing so env vars are available for defaults)
+	if err := config.LoadEnvFile(".env"); err != nil {
+		fmt.Printf("⚠️  .env: %v\n", err)
+	}
+
+	// CLI flags
 	repoPath := flag.String("repo", ".", "Path to Git repository")
 	baseBranch := flag.String("base", "main", "Base branch for comparison")
 	apiKey := flag.String("api-key", "", "LLM API key (or TESTGEN_API_KEY env)")
@@ -56,7 +57,7 @@ func main() {
 
 	flag.Parse()
 
-	// Поддержка позиционных аргументов для обратной совместимости
+	// Support positional args for backward compatibility
 	if flag.NArg() > 0 && *repoPath == "." {
 		*repoPath = flag.Arg(0)
 	}
@@ -122,439 +123,36 @@ func main() {
 	}
 
 	// ─── Step 3: For each .go file — AST analysis + test generation ───
+	opts := pipelineOpts{
+		RepoPath:       *repoPath,
+		BaseBranch:     *baseBranch,
+		OutDir:         *outDir,
+		APIKey:         *apiKey,
+		BaseURL:        *baseURL,
+		Model:          *model,
+		DryRun:         *dryRun,
+		NoValidate:     *noValidate,
+		NoCoverage:     *noCoverage,
+		NoSmartDiff:    *noSmartDiff,
+		RaceDetection:  *raceDetection,
+		MutationTest:   *mutationTest,
+		CoverageTarget: *coverageTarget,
+		ProjectCfg:     projectCfg,
+		FnCache:        fnCache,
+	}
+
 	for _, f := range files {
-		changedLines := f.ChangedLines()
-		fmt.Printf("  📄 %s\n", f.NewPath)
-		fmt.Printf("     Hunks: %d, Changed lines: %d\n", len(f.Hunks), len(changedLines))
-
-		if !strings.HasSuffix(f.NewPath, ".go") || strings.HasSuffix(f.NewPath, "_test.go") {
-			fmt.Printf("     ⏭️  Skipped (not .go or is _test.go)\n\n")
+		res := processFile(f, opts)
+		if res == nil {
 			continue
 		}
-
-		if projectCfg.ShouldExclude(f.NewPath) {
-			fmt.Printf("     ⏭️  Skipped by config (exclude pattern)\n\n")
-			continue
+		if res.Attempted {
+			totalAttempted++
 		}
-
-		fullPath := filepath.Join(*repoPath, f.NewPath)
-
-		// AST analysis — single file
-		analysis, err := analyzer.AnalyzeFile(fullPath)
-		if err != nil {
-			fmt.Printf("     ⚠️  AST analysis failed: %v\n\n", err)
-			continue
-		}
-
-		// Package-level analysis (types, cross-file functions)
-		pkgDir := filepath.Dir(fullPath)
-		pkgAnalysis, pkgErr := analyzer.AnalyzePackage(pkgDir)
-
-		affectedFuncs := analyzer.FindFunctionsByLines(analysis, changedLines)
-		if len(affectedFuncs) == 0 {
-			fmt.Printf("     ℹ️  Changes outside functions\n\n")
-			continue
-		}
-
-		fmt.Printf("     🔍 Affected functions (%d):\n", len(affectedFuncs))
-		for _, fn := range affectedFuncs {
-			fmt.Printf("        • %s  (lines %d–%d)\n", fn.Signature, fn.StartLine, fn.EndLine)
-		}
-		totalAttempted++
-
-		// Collect used types and called functions
-		var usedTypes []analyzer.TypeInfo
-		var calledFuncs []analyzer.FuncInfo
-
-		if pkgErr == nil && pkgAnalysis != nil {
-			// Collect all types used by any affected function
-			seenTypes := make(map[string]bool)
-			for _, fn := range affectedFuncs {
-				for _, ti := range analyzer.FindUsedTypes(fn, pkgAnalysis.AllTypes) {
-					if !seenTypes[ti.Name] {
-						usedTypes = append(usedTypes, ti)
-						seenTypes[ti.Name] = true
-					}
-				}
-			}
-
-			// Collect cross-file called functions
-			seenFuncs := make(map[string]bool)
-			for _, fn := range affectedFuncs {
-				for _, called := range analyzer.FindCalledFunctions(fn, pkgAnalysis) {
-					if !seenFuncs[called.Name] {
-						calledFuncs = append(calledFuncs, called)
-						seenFuncs[called.Name] = true
-					}
-				}
-			}
-
-			if len(usedTypes) > 0 {
-				typeNames := make([]string, len(usedTypes))
-				for i, t := range usedTypes {
-					typeNames[i] = t.Name
-				}
-				fmt.Printf("     📦 Types: %s\n", strings.Join(typeNames, ", "))
-			}
-			if len(calledFuncs) > 0 {
-				funcNames := make([]string, len(calledFuncs))
-				for i, f := range calledFuncs {
-					funcNames[i] = f.Name
-				}
-				fmt.Printf("     🔗 Dependencies: %s\n", strings.Join(funcNames, ", "))
-			}
-		}
-
-		// ─── Cache check: skip functions with matching hash ───
-		if fnCache != nil {
-			var uncachedFuncs []analyzer.FuncInfo
-			for _, fn := range affectedFuncs {
-				key := cache.Key(f.NewPath, fn.Name)
-				hash := cache.ComputeHash(fn, usedTypes)
-
-				if entry, hit := fnCache.Lookup(key, hash); hit {
-					fmt.Printf("     ♻️  Cached: %s (tests: %s, model: %s)\n",
-						fn.Name, strings.Join(entry.GeneratedFuncs, ", "), entry.Model)
-					totalCached++
-				} else {
-					uncachedFuncs = append(uncachedFuncs, fn)
-				}
-			}
-
-			if len(uncachedFuncs) == 0 {
-				fmt.Printf("     ✅ All functions cached — skipping LLM call\n\n")
-				continue
-			}
-
-			if len(uncachedFuncs) < len(affectedFuncs) {
-				fmt.Printf("     📝 %d/%d functions need generation\n",
-					len(uncachedFuncs), len(affectedFuncs))
-			}
-
-			affectedFuncs = uncachedFuncs
-		}
-
-		// ─── Git-based comparison: skip functions with unchanged body ───
-		if !*noSmartDiff && len(affectedFuncs) > 0 {
-			cmpResult, cmpErr := gitdiff.FilterChanged(affectedFuncs, *repoPath, *baseBranch, f.NewPath)
-			if cmpErr != nil {
-				fmt.Printf("     ⚠️  Git compare: %v (processing all functions)\n", cmpErr)
-			} else {
-				if len(cmpResult.Unchanged) > 0 {
-					names := make([]string, len(cmpResult.Unchanged))
-					for i, fn := range cmpResult.Unchanged {
-						names[i] = fn.Name
-					}
-					fmt.Printf("     🔄 Unchanged vs base: %s (skipped)\n", strings.Join(names, ", "))
-				}
-				if len(cmpResult.New) > 0 {
-					names := make([]string, len(cmpResult.New))
-					for i, fn := range cmpResult.New {
-						names[i] = fn.Name
-					}
-					fmt.Printf("     🆕 New functions: %s\n", strings.Join(names, ", "))
-				}
-
-				// Keep only changed + new functions
-				var needGeneration []analyzer.FuncInfo
-				needGeneration = append(needGeneration, cmpResult.Changed...)
-				needGeneration = append(needGeneration, cmpResult.New...)
-
-				if len(needGeneration) == 0 {
-					fmt.Printf("     ✅ All functions unchanged vs base — skipping LLM\n\n")
-					continue
-				}
-
-				if len(needGeneration) < len(affectedFuncs) {
-					fmt.Printf("     📝 %d/%d functions actually changed\n",
-						len(needGeneration), len(affectedFuncs))
-				}
-
-				affectedFuncs = needGeneration
-			}
-		}
-
-		// Check for existing tests
-		existingTests := readExistingTests(fullPath)
-
-		// ─── Concurrency detection ───
-		useRace := *raceDetection || projectCfg.Race
-		var concInfos map[string]analyzer.ConcurrencyInfo
-		hasConcurrentFuncs := false
-
-		if useRace {
-			concInfos = make(map[string]analyzer.ConcurrencyInfo)
-			for _, fn := range affectedFuncs {
-				ci := analyzer.DetectConcurrency(fn, usedTypes)
-				if ci.IsConcurrent {
-					concInfos[fn.Name] = ci
-					hasConcurrentFuncs = true
-					fmt.Printf("     ⚡ %s: concurrent (%s)\n", fn.Name, strings.Join(ci.Patterns, ", "))
-				}
-			}
-		}
-
-		// Build prompt
-		req := prompt.TestGenRequest{
-			PackageName:      analysis.Package,
-			FilePath:         f.NewPath,
-			Imports:          analysis.Imports,
-			TargetFuncs:      affectedFuncs,
-			ExistingTests:    existingTests,
-			UsedTypes:        usedTypes,
-			CalledFuncs:      calledFuncs,
-			CustomPrompt:     projectCfg.CustomPrompt,
-			ConcurrencyInfos: concInfos,
-			RaceDetection:    useRace,
-		}
-
-		messages := prompt.BuildMessages(req)
-
-		if *dryRun {
-			fmt.Printf("\n     📋 DRY RUN — Prompt:\n")
-			fmt.Printf("     ── System (%d chars) ──\n", len(messages[0].Content))
-			fmt.Printf("     ── User (%d chars) ──\n", len(messages[1].Content))
-			fmt.Println(messages[1].Content)
-			fmt.Println()
-			continue
-		}
-
-		// ─── Step 4: Call LLM ───
-		cfg := buildLLMConfig(*apiKey, *baseURL, *model)
-		if cfg.APIKey == "" && cfg.BaseURL == "https://api.openai.com/v1" {
-			fmt.Printf("     ⚠️  No API key. Use --api-key or TESTGEN_API_KEY env\n")
-			fmt.Printf("     💡 Or set --api-url for local model (Ollama)\n\n")
-			continue
-		}
-
-		client := llm.NewClient(cfg)
-		testFilePath := buildTestFilePath(fullPath, *outDir)
-
-		// ─── Generation loop with validation ───
-		var generatedCode string
-		var lastTestOutput string // полный вывод go test -v для прунера
-		success := false
-
-		for attempt := 1; attempt <= maxRetries; attempt++ {
-			if attempt == 1 {
-				fmt.Printf("     🤖 Generating tests via %s...\n", cfg.Model)
-			} else {
-				fmt.Printf("     🔄 Attempt %d/%d — fixing errors...\n", attempt, maxRetries)
-			}
-
-			var result *llm.GenerateResponse
-
-			if attempt == 1 {
-				result, err = client.Generate(messages)
-			} else {
-				fixMessages := prompt.BuildFixMessages(req, generatedCode, lastValidationError, attempt)
-				result, err = client.Generate(fixMessages)
-			}
-
-			if err != nil {
-				fmt.Printf("     ❌ LLM error: %v\n", err)
-				break
-			}
-
-			generatedCode = result.Content
-			fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
-				result.PromptTokens, result.CompletionTokens)
-
-			// ─── AST Merge: preserve existing tests ───
-			if existingTests != "" {
-				mergeResult, mergeErr := merger.Merge(existingTests, generatedCode)
-				if mergeErr != nil {
-					fmt.Printf("     ⚠️  AST merge failed, using raw LLM output: %v\n", mergeErr)
-				} else {
-					generatedCode = mergeResult.Code
-					if len(mergeResult.Added) > 0 {
-						fmt.Printf("     🔀 Merged: +%d new funcs", len(mergeResult.Added))
-						if len(mergeResult.Skipped) > 0 {
-							fmt.Printf(", %d existing preserved", len(mergeResult.Skipped))
-						}
-						fmt.Println()
-					}
-				}
-			}
-
-			// ─── Deduplication: remove duplicate test cases ───
-			dedupResult, dedupErr := dedup.Dedup(generatedCode)
-			if dedupErr == nil && dedupResult.Removed > 0 {
-				generatedCode = dedupResult.Code
-				fmt.Printf("     🧹 Dedup: removed %d duplicate case(s)\n", dedupResult.Removed)
-			}
-
-			// Save file
-			if err := os.MkdirAll(filepath.Dir(testFilePath), 0755); err != nil {
-				fmt.Printf("     ❌ Cannot create directory: %v\n", err)
-				break
-			}
-
-			if err := os.WriteFile(testFilePath, []byte(generatedCode), 0644); err != nil {
-				fmt.Printf("     ❌ Cannot write file: %v\n", err)
-				break
-			}
-
-			// ─── Step 5: Validation ───
-			if *noValidate {
-				fmt.Printf("     💾 Tests saved: %s (validation disabled)\n\n", testFilePath)
-				totalGenerated++
-				success = true
-				break
-			}
-
-			fmt.Printf("     🔬 Validating...\n")
-			valResult := validator.Validate(*repoPath, testFilePath)
-
-			if valResult.IsValid() {
-				fmt.Printf("     %s\n", valResult.Summary())
-
-				// Race detection pass (if enabled and concurrent functions detected)
-				if useRace && hasConcurrentFuncs {
-					fmt.Printf("     🏁 Running race detector...\n")
-					raceResult := validator.ValidateWithRace(*repoPath, testFilePath)
-					if raceResult.HasRaces {
-						fmt.Printf("     ⚠️  DATA RACE detected:\n%s\n", raceResult.RaceDetails)
-					} else if raceResult.IsValid() {
-						fmt.Printf("     ✅ Race detector: no races found\n")
-					} else {
-						fmt.Printf("     ⚠️  Race test failed: %s\n", raceResult.TestError)
-					}
-				}
-
-				fmt.Printf("     💾 Tests saved: %s\n\n", testFilePath)
-				totalGenerated++
-				totalValidated++
-				success = true
-				updateCache(fnCache, f.NewPath, affectedFuncs, usedTypes, testFilePath, cfg.Model)
-				break
-			}
-
-			// Validation failed
-			lastValidationError = valResult.Summary()
-			lastTestOutput = valResult.TestOutput
-			fmt.Printf("     %s\n", valResult.Summary())
-
-			if attempt == maxRetries {
-				fmt.Printf("     ⛔ Max retries reached (%d)\n", maxRetries)
-			}
-		}
-
-		// If validation failed — try pruning failing tests
-		if !success {
-			if generatedCode != "" && lastTestOutput != "" {
-				fmt.Printf("     ✂️  Pruning failing tests...\n")
-				pruneResult, pruneErr := pruner.Prune(generatedCode, lastTestOutput)
-
-				if pruneErr != nil {
-					fmt.Printf("     ⚠️  Prune failed: %v\n", pruneErr)
-					os.Remove(testFilePath)
-					fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
-				} else if pruneResult.KeptTests == 0 {
-					fmt.Printf("     ⚠️  All tests failed, nothing to keep\n")
-					os.Remove(testFilePath)
-					fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
-				} else {
-					fmt.Printf("     ✂️  Removed %d functions, %d sub-test cases. Kept %d test functions.\n",
-						len(pruneResult.RemovedFuncs), pruneResult.RemovedSubTests, pruneResult.KeptTests)
-
-					if len(pruneResult.RemovedFuncs) > 0 {
-						fmt.Printf("     🗑️  Removed: %s\n", strings.Join(pruneResult.RemovedFuncs, ", "))
-					}
-
-					// Save pruned code and re-validate
-					if err := os.WriteFile(testFilePath, []byte(pruneResult.Code), 0644); err != nil {
-						fmt.Printf("     ❌ Cannot write pruned file: %v\n", err)
-						os.Remove(testFilePath)
-					} else {
-						fmt.Printf("     🔬 Re-validating pruned tests...\n")
-						valResult := validator.Validate(*repoPath, testFilePath)
-
-						if valResult.IsValid() {
-							fmt.Printf("     %s\n", valResult.Summary())
-							fmt.Printf("     💾 Pruned tests saved: %s\n\n", testFilePath)
-							totalGenerated++
-							totalValidated++
-							success = true
-							updateCache(fnCache, f.NewPath, affectedFuncs, usedTypes, testFilePath, cfg.Model)
-						} else {
-							fmt.Printf("     ⚠️  Pruned tests still fail: %s\n", valResult.Summary())
-							os.Remove(testFilePath)
-							fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
-						}
-					}
-				}
-			} else if generatedCode == "" {
-				fmt.Printf("     ❌ Failed to generate tests\n\n")
-			} else {
-				os.Remove(testFilePath)
-				fmt.Printf("     🗑️  Invalid file deleted: %s\n\n", testFilePath)
-			}
-
-			if !success {
-				continue
-			}
-		}
-
-		// ─── Step 6: Diff Coverage Analysis ───
-		var fileDiffCov float64
-		if !*noValidate && !*noCoverage && !*dryRun {
-			fileDiffCov = runCoverageLoop(
-				client, cfg, req, testFilePath, fullPath, *repoPath,
-				changedLines, affectedFuncs, *coverageTarget,
-			)
-		}
-
-		// ─── Step 7: Mutation Testing (optional) ───
-		if *mutationTest && success && !*dryRun {
-			fmt.Printf("     🧬 Running mutation testing...\n")
-			funcNamesForMut := make([]string, len(affectedFuncs))
-			for i, fn := range affectedFuncs {
-				funcNamesForMut[i] = fn.Name
-			}
-
-			moduleRoot := findModuleRoot(filepath.Dir(fullPath))
-			if moduleRoot != "" {
-				mutResult, mutErr := mutation.RunMutationTests(fullPath, funcNamesForMut, moduleRoot)
-				if mutErr != nil {
-					fmt.Printf("     ⚠️  Mutation testing failed: %v\n", mutErr)
-				} else {
-					fmt.Printf("     🧬 Mutation Score: %.1f%% (%d killed / %d total, %d survived)\n",
-						mutResult.MutationScore, mutResult.Killed, mutResult.Total, mutResult.Survived)
-					if mutResult.Survived > 0 {
-						for _, m := range mutResult.Mutants {
-							if !m.Killed && m.Error == "" {
-								fmt.Printf("        ⚠️  Survived: %s:%d  %s → %s (func %s)\n",
-									filepath.Base(m.File), m.Line, m.Original, m.Replacement, m.FuncName)
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Collect file report
-		funcNames := make([]string, len(affectedFuncs))
-		for i, fn := range affectedFuncs {
-			funcNames[i] = fn.Name
-		}
-
-		status := "failed"
-		if success {
-			status = "success"
-			if fileDiffCov < *coverageTarget && fileDiffCov > 0 {
-				status = "partial"
-			}
-		}
-
-		fileReports = append(fileReports, ghub.FileReport{
-			File:         f.NewPath,
-			Functions:    funcNames,
-			TestsTotal:   totalGenerated,
-			TestsPassed:  totalValidated,
-			DiffCoverage: fileDiffCov,
-			Status:       status,
-		})
+		totalGenerated += res.Generated
+		totalValidated += res.Validated
+		totalCached += res.Cached
+		fileReports = append(fileReports, res.Report)
 	}
 
 	// ─── Save cache ───
@@ -580,20 +178,43 @@ func main() {
 	ghRepoVal := resolveEnv(*ghRepo, "GITHUB_REPOSITORY")
 	prNum := resolvePRNumber(*prNumber)
 
-	if ghTokenVal != "" && ghRepoVal != "" && prNum > 0 {
+	tokenPreview := "(empty)"
+	if ghTokenVal != "" {
+		tokenPreview = ghTokenVal[:min(8, len(ghTokenVal))] + "***"
+	}
+	fmt.Printf("🔑 GitHub: token=%s repo=%q pr=#%d\n", tokenPreview, ghRepoVal, prNum)
+
+	if ghTokenVal == "" || ghRepoVal == "" || prNum == 0 {
+		var missing []string
+		if ghTokenVal == "" {
+			missing = append(missing, "--github-token or GITHUB_TOKEN")
+		}
+		if ghRepoVal == "" {
+			missing = append(missing, "--github-repo or GITHUB_REPOSITORY")
+		}
+		if prNum == 0 {
+			missing = append(missing, "--pr-number or TESTGEN_PR_NUMBER")
+		}
+		fmt.Printf("ℹ️  PR comment skipped (missing: %s)\n", strings.Join(missing, ", "))
+	} else {
 		parts := strings.SplitN(ghRepoVal, "/", 2)
-		if len(parts) == 2 {
+		if len(parts) != 2 {
+			fmt.Printf("⚠️  Invalid --github-repo format %q (expected owner/repo)\n", ghRepoVal)
+		} else {
 			modelName := *model
 			if modelName == "" {
 				modelName = "gpt-4o-mini"
 			}
 
-			report := ghub.Report{
+			ghReport := ghub.Report{
 				Files:          fileReports,
 				TotalGenerated: totalGenerated,
 				TotalValidated: totalValidated,
+				TotalCached:    totalCached,
+				CoverageTarget: *coverageTarget,
 				Model:          modelName,
 				Duration:       time.Since(startTime),
+				BaseBranch:     *baseBranch,
 			}
 
 			// Calculate average diff coverage
@@ -606,11 +227,11 @@ func main() {
 				}
 			}
 			if covCount > 0 {
-				report.TotalDiffCov = totalCov / float64(covCount)
+				ghReport.TotalDiffCov = totalCov / float64(covCount)
 			}
 
 			commenter := ghub.NewCommenter(ghTokenVal, parts[0], parts[1], prNum)
-			if err := commenter.PostReport(report); err != nil {
+			if err := commenter.PostReport(ghReport); err != nil {
 				fmt.Printf("⚠️  Failed to post PR comment: %v\n", err)
 			} else {
 				fmt.Printf("💬 Report posted to PR #%d\n", prNum)
@@ -682,8 +303,8 @@ func main() {
 	}
 }
 
-// runCoverageLoop запускает итеративную догенерацию тестов на основе diff coverage.
-// Возвращает итоговый diff coverage %.
+// runCoverageLoop runs iterative test re-generation based on diff coverage.
+// Returns the final diff coverage %.
 func runCoverageLoop(
 	client *llm.Client,
 	cfg llm.Config,
@@ -695,7 +316,7 @@ func runCoverageLoop(
 	affectedFuncs []analyzer.FuncInfo,
 	target float64,
 ) float64 {
-	// Определяем модульный корень и директорию пакета
+	// Determine module root and package directory
 	pkgDir := filepath.Dir(sourceFilePath)
 	moduleRoot := findModuleRoot(pkgDir)
 
@@ -721,11 +342,11 @@ func runCoverageLoop(
 
 		// Parse coverage profile
 		profileData, err := os.ReadFile(coverFile)
+		os.Remove(coverFile)
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot read coverage profile: %v\n", err)
 			return lastCoverage
 		}
-		defer os.Remove(coverFile)
 
 		blocks, err := coverage.ParseProfile(string(profileData))
 		if err != nil {
@@ -783,8 +404,28 @@ func runCoverageLoop(
 		fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
 			result.PromptTokens, result.CompletionTokens)
 
+		newCode := result.Content
+
+		// Merge new tests with existing ones
+		mergeResult, mergeErr := merger.Merge(string(currentTests), newCode)
+		if mergeErr != nil {
+			fmt.Printf("     ⚠️  AST merge failed in coverage loop, using raw output: %v\n", mergeErr)
+		} else {
+			newCode = mergeResult.Code
+			if len(mergeResult.Added) > 0 {
+				fmt.Printf("     🔀 Coverage merge: +%d new funcs\n", len(mergeResult.Added))
+			}
+		}
+
+		// Deduplicate
+		dedupResult, dedupErr := dedup.Dedup(newCode)
+		if dedupErr == nil && dedupResult.Removed > 0 {
+			newCode = dedupResult.Code
+			fmt.Printf("     🧹 Coverage dedup: removed %d duplicate(s)\n", dedupResult.Removed)
+		}
+
 		// Save and validate
-		if err := os.WriteFile(testFilePath, []byte(result.Content), 0644); err != nil {
+		if err := os.WriteFile(testFilePath, []byte(newCode), 0644); err != nil {
 			fmt.Printf("     ❌ Cannot write file: %v\n", err)
 			return lastCoverage
 		}
@@ -833,7 +474,7 @@ func runCoverageLoop(
 	return lastCoverage
 }
 
-// findModuleRoot ищет go.mod вверх по дереву каталогов.
+// findModuleRoot searches for go.mod up the directory tree.
 func findModuleRoot(dir string) string {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -852,7 +493,7 @@ func findModuleRoot(dir string) string {
 	}
 }
 
-// truncate обрезает строку до maxLen символов.
+// truncate trims a string to maxLen characters.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -860,10 +501,7 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// lastValidationError хранит последнюю ошибку валидации для retry.
-var lastValidationError string
-
-// gitDiff получает diff из git-репозитория.
+// gitDiff retrieves the diff from the git repository.
 func gitDiff(repoPath, baseBranch string) (string, error) {
 	cmd := exec.Command("git", "diff", baseBranch)
 	cmd.Dir = repoPath
@@ -879,7 +517,7 @@ func gitDiff(repoPath, baseBranch string) (string, error) {
 	return string(output), nil
 }
 
-// readExistingTests пытается прочитать существующий файл тестов.
+// readExistingTests attempts to read an existing test file.
 func readExistingTests(goFilePath string) string {
 	ext := filepath.Ext(goFilePath)
 	testPath := strings.TrimSuffix(goFilePath, ext) + "_test" + ext
@@ -891,7 +529,7 @@ func readExistingTests(goFilePath string) string {
 	return string(data)
 }
 
-// buildTestFilePath определяет путь для файла тестов.
+// buildTestFilePath determines the output path for the test file.
 func buildTestFilePath(goFilePath, outDir string) string {
 	ext := filepath.Ext(goFilePath)
 	base := strings.TrimSuffix(filepath.Base(goFilePath), ext)
@@ -904,7 +542,7 @@ func buildTestFilePath(goFilePath, outDir string) string {
 	return filepath.Join(filepath.Dir(goFilePath), testFileName)
 }
 
-// updateCache обновляет кэш для успешно сгенерированных функций.
+// updateCache updates the cache for successfully generated functions.
 func updateCache(fnCache *cache.Cache, filePath string, funcs []analyzer.FuncInfo, usedTypes []analyzer.TypeInfo, testFile string, model string) {
 	if fnCache == nil {
 		return
@@ -917,14 +555,14 @@ func updateCache(fnCache *cache.Cache, filePath string, funcs []analyzer.FuncInf
 		fnCache.Put(key, cache.FuncEntry{
 			Hash:           hash,
 			TestFile:       filepath.Base(testFile),
-			GeneratedFuncs: []string{"Test" + fn.Name}, // упрощённо
+			GeneratedFuncs: []string{"Test" + fn.Name}, // simplified
 			Model:          model,
 			Timestamp:      time.Now(),
 		})
 	}
 }
 
-// resolveEnv возвращает flagVal если не пусто, иначе os.Getenv(envKey).
+// resolveEnv returns flagVal if non-empty, otherwise os.Getenv(envKey).
 func resolveEnv(flagVal, envKey string) string {
 	if flagVal != "" {
 		return flagVal
@@ -932,13 +570,13 @@ func resolveEnv(flagVal, envKey string) string {
 	return os.Getenv(envKey)
 }
 
-// resolvePRNumber извлекает номер PR из флага или переменных окружения.
+// resolvePRNumber extracts the PR number from a flag or environment variables.
 func resolvePRNumber(flagVal int) int {
 	if flagVal > 0 {
 		return flagVal
 	}
-	// GitHub Actions: GITHUB_EVENT_PATH содержит JSON с номером PR
-	// Но проще через env var, которую workflow передаёт
+	// GitHub Actions: GITHUB_EVENT_PATH contains JSON with the PR number
+	// Simpler via env var passed by the workflow
 	prStr := os.Getenv("TESTGEN_PR_NUMBER")
 	if prStr != "" {
 		var n int
@@ -948,7 +586,7 @@ func resolvePRNumber(flagVal int) int {
 	return 0
 }
 
-// buildLLMConfig формирует конфигурацию LLM-клиента из CLI-флагов и env.
+// buildLLMConfig builds the LLM client configuration from CLI flags and env.
 func buildLLMConfig(apiKey, baseURL, model string) llm.Config {
 	cfg := llm.DefaultConfig()
 
@@ -973,15 +611,15 @@ func buildLLMConfig(apiKey, baseURL, model string) llm.Config {
 	return cfg
 }
 
-// applyConfigDefaults применяет значения из .testgen.yml для CLI-флагов,
-// которые не были указаны пользователем. CLI-флаги имеют приоритет.
+// applyConfigDefaults applies values from .testgen.yml for CLI flags
+// that were not set by the user. CLI flags take priority.
 func applyConfigDefaults(
 	cfg *config.Config,
 	model, baseURL, apiKey, outDir *string,
 	coverageTarget *float64,
 	noValidate, noCoverage, noCache, noSmartDiff, mutationTest, raceDetection *bool,
 ) {
-	// Только если флаг не задан — берём из конфига
+	// Only if the flag is not set — use config value
 	if *model == "" && cfg.Model != "" {
 		*model = cfg.Model
 	}
