@@ -41,6 +41,7 @@ type Report struct {
 	BaseBranch     string
 	RunID          string // GitHub Actions run ID for artifact links
 	RepoFullName   string // owner/repo for building URLs
+	CommitSHA      string // trigger commit SHA
 }
 
 // Commenter posts reports to a GitHub PR.
@@ -63,19 +64,10 @@ func NewCommenter(token, owner, repo string, prNum int) *Commenter {
 	}
 }
 
-// PostReport posts (or updates) a report as a PR comment.
-// If a previous testgen-agent comment exists, it will be updated in place.
+// PostReport posts a new report as a PR comment.
+// Each workflow run creates a separate comment for full history.
 func (c *Commenter) PostReport(report Report) error {
 	body := formatReport(report)
-
-	existingID, err := c.findBotComment()
-	if err != nil {
-		return fmt.Errorf("find existing comment: %w", err)
-	}
-
-	if existingID > 0 {
-		return c.updateComment(existingID, body)
-	}
 	return c.postComment(body)
 }
 
@@ -85,6 +77,17 @@ func formatReport(r Report) string {
 
 	sb.WriteString(botMarker + "\n")
 	sb.WriteString("## 🤖 Testgen Agent Report\n\n")
+	if r.CommitSHA != "" {
+		short := r.CommitSHA
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		if r.RepoFullName != "" {
+			sb.WriteString(fmt.Sprintf("> **Commit:** [`%s`](https://github.com/%s/commit/%s)\n", short, r.RepoFullName, r.CommitSHA))
+		} else {
+			sb.WriteString(fmt.Sprintf("> **Commit:** `%s`\n", short))
+		}
+	}
 
 	// Overall status badge
 	overallStatus := "✅ All tests passed"
@@ -228,85 +231,6 @@ func formatReport(r Report) string {
 
 type commentRequest struct {
 	Body string `json:"body"`
-}
-
-type commentResponse struct {
-	ID   int    `json:"id"`
-	Body string `json:"body"`
-}
-
-// findBotComment searches for an existing testgen-agent comment on the PR.
-func (c *Commenter) findBotComment() (int, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments?per_page=100",
-		c.apiBase, c.owner, c.repo, c.prNum)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("list comments: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, nil
-	}
-
-	var comments []commentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-		return 0, nil
-	}
-
-	for _, comment := range comments {
-		if strings.Contains(comment.Body, botMarker) {
-			return comment.ID, nil
-		}
-	}
-
-	return 0, nil
-}
-
-// updateComment updates an existing PR comment by ID.
-func (c *Commenter) updateComment(commentID int, body string) error {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/comments/%d",
-		c.apiBase, c.owner, c.repo, commentID)
-
-	payload, err := json.Marshal(commentRequest{Body: body})
-	if err != nil {
-		return fmt.Errorf("marshal comment: %w", err)
-	}
-
-	req, err := http.NewRequest("PATCH", url, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("update comment: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GitHub API error %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
 }
 
 // postComment sends a new comment to a PR via the GitHub API.

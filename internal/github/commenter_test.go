@@ -173,6 +173,24 @@ func TestFormatReport_NoCollapsibleFewFiles(t *testing.T) {
 	}
 }
 
+func TestFormatReport_CommitSHA(t *testing.T) {
+	report := Report{
+		TotalGenerated: 1, TotalValidated: 1,
+		Model: "m", Duration: time.Second,
+		CommitSHA:    "abc1234567890def",
+		RepoFullName: "owner/repo",
+	}
+
+	md := FormatReportMarkdown(report)
+
+	if !strings.Contains(md, "abc1234") {
+		t.Error("should contain short SHA")
+	}
+	if !strings.Contains(md, "https://github.com/owner/repo/commit/abc1234567890def") {
+		t.Error("should contain commit link")
+	}
+}
+
 func TestFormatReport_NoMutationSection(t *testing.T) {
 	report := Report{
 		Files: []FileReport{
@@ -253,112 +271,17 @@ func TestPostComment_Error(t *testing.T) {
 	}
 }
 
-func TestFindBotComment_Found(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		comments := []commentResponse{
-			{ID: 10, Body: "some other comment"},
-			{ID: 42, Body: botMarker + "\n## 🤖 Testgen Agent Report\n..."},
-			{ID: 99, Body: "another comment"},
-		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(comments)
-	}))
-	defer server.Close()
-
-	c := &Commenter{
-		token: "tok", owner: "o", repo: "r", prNum: 1,
-		apiBase: server.URL,
-	}
-
-	id, err := c.findBotComment()
-	if err != nil {
-		t.Fatalf("findBotComment error: %v", err)
-	}
-	if id != 42 {
-		t.Errorf("expected comment ID 42, got %d", id)
-	}
-}
-
-func TestFindBotComment_NotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		comments := []commentResponse{
-			{ID: 10, Body: "some other comment"},
-		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(comments)
-	}))
-	defer server.Close()
-
-	c := &Commenter{
-		token: "tok", owner: "o", repo: "r", prNum: 1,
-		apiBase: server.URL,
-	}
-
-	id, err := c.findBotComment()
-	if err != nil {
-		t.Fatalf("findBotComment error: %v", err)
-	}
-	if id != 0 {
-		t.Errorf("expected 0 (not found), got %d", id)
-	}
-}
-
-func TestUpdateComment(t *testing.T) {
-	var receivedMethod string
-	var receivedPath string
-	var receivedBody string
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedMethod = r.Method
-		receivedPath = r.URL.Path
-
-		body, _ := io.ReadAll(r.Body)
-		var req commentRequest
-		json.Unmarshal(body, &req)
-		receivedBody = req.Body
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id": 42}`))
-	}))
-	defer server.Close()
-
-	c := &Commenter{
-		token: "tok", owner: "myowner", repo: "myrepo", prNum: 7,
-		apiBase: server.URL,
-	}
-
-	err := c.updateComment(42, "updated report content")
-	if err != nil {
-		t.Fatalf("updateComment error: %v", err)
-	}
-
-	if receivedMethod != "PATCH" {
-		t.Errorf("method = %q, want PATCH", receivedMethod)
-	}
-	if receivedPath != "/repos/myowner/myrepo/issues/comments/42" {
-		t.Errorf("path = %q, want /repos/myowner/myrepo/issues/comments/42", receivedPath)
-	}
-	if receivedBody != "updated report content" {
-		t.Errorf("body = %q, want 'updated report content'", receivedBody)
-	}
-}
-
 func TestPostReport_CreatesNew(t *testing.T) {
-	callOrder := []string{}
+	posted := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			callOrder = append(callOrder, "GET")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`[]`))
-			return
-		}
 		if r.Method == "POST" {
-			callOrder = append(callOrder, "POST")
+			posted = true
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"id": 1}`))
 			return
 		}
+		t.Errorf("unexpected method: %s", r.Method)
 	}))
 	defer server.Close()
 
@@ -372,31 +295,22 @@ func TestPostReport_CreatesNew(t *testing.T) {
 		t.Fatalf("PostReport error: %v", err)
 	}
 
-	if len(callOrder) != 2 || callOrder[0] != "GET" || callOrder[1] != "POST" {
-		t.Errorf("expected [GET, POST], got %v", callOrder)
+	if !posted {
+		t.Error("expected POST request")
 	}
 }
 
-func TestPostReport_UpdatesExisting(t *testing.T) {
-	callOrder := []string{}
+func TestPostReport_AlwaysCreatesNew(t *testing.T) {
+	calls := 0
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			callOrder = append(callOrder, "GET")
-			comments := []commentResponse{
-				{ID: 99, Body: botMarker + "\nold report"},
-			}
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(comments)
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s (should not search for existing comments)", r.Method)
 			return
 		}
-		if r.Method == "PATCH" {
-			callOrder = append(callOrder, "PATCH")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"id": 99}`))
-			return
-		}
-		t.Errorf("unexpected method: %s %s", r.Method, r.URL.Path)
+		calls++
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id": 1}`))
 	}))
 	defer server.Close()
 
@@ -405,12 +319,10 @@ func TestPostReport_UpdatesExisting(t *testing.T) {
 		apiBase: server.URL,
 	}
 
-	err := c.PostReport(Report{Model: "test", Duration: time.Second})
-	if err != nil {
-		t.Fatalf("PostReport error: %v", err)
-	}
+	_ = c.PostReport(Report{Model: "run1", Duration: time.Second})
+	_ = c.PostReport(Report{Model: "run2", Duration: time.Second})
 
-	if len(callOrder) != 2 || callOrder[0] != "GET" || callOrder[1] != "PATCH" {
-		t.Errorf("expected [GET, PATCH], got %v", callOrder)
+	if calls != 2 {
+		t.Errorf("expected 2 POST calls, got %d", calls)
 	}
 }

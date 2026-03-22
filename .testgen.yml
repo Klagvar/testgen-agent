@@ -1,9 +1,5 @@
-model: "qwen2.5-coder:32b"
-api_url: "http://localhost:11434/v1"
 coverage_threshold: 70
 mutation: true
 race_detection: true
 report_format: "html"
 max_context_tokens: 16000
-
-include_only: "testdata/sample-project/**"

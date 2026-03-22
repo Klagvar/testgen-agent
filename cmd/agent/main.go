@@ -217,6 +217,7 @@ func main() {
 				BaseBranch:     *baseBranch,
 				RunID:          os.Getenv("GITHUB_RUN_ID"),
 				RepoFullName:   ghRepoVal,
+				CommitSHA:      os.Getenv("GITHUB_SHA"),
 			}
 
 			// Calculate average diff coverage
