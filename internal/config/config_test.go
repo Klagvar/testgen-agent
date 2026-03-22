@@ -222,6 +222,31 @@ func TestString(t *testing.T) {
 	}
 }
 
+func TestShouldExclude_DefaultExcludes(t *testing.T) {
+	cfg := DefaultConfig()
+
+	tests := []struct {
+		path    string
+		exclude bool
+	}{
+		{"api/user.pb.go", true},
+		{"models/schema_generated.go", true},
+		{"types_gen.go", true},
+		{"vendor/lib/foo.go", true},
+		{"internal/service.go", false},
+		{"cmd/main.go", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := cfg.ShouldExclude(tt.path)
+			if got != tt.exclude {
+				t.Errorf("ShouldExclude(%q) = %v, want %v", tt.path, got, tt.exclude)
+			}
+		})
+	}
+}
+
 func TestMatchGlob(t *testing.T) {
 	tests := []struct {
 		path    string

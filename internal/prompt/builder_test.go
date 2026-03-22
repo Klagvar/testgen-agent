@@ -146,31 +146,60 @@ func TestBuildUserPrompt_ContainsDocComment(t *testing.T) {
 	}
 }
 
-func TestBuildUserPrompt_WithExistingTests(t *testing.T) {
+func TestBuildUserPrompt_WithExistingTestNames(t *testing.T) {
 	req := sampleRequest()
-	req.ExistingTests = `func TestAdd(t *testing.T) {
-	// existing test
-}`
+	req.ExistingTestNames = []string{"TestAdd", "TestMultiply_Basic"}
 	prompt := BuildUserPrompt(req)
 
 	if !strings.Contains(prompt, "Existing Tests") {
 		t.Error("prompt does not contain existing tests section")
 	}
-	if !strings.Contains(prompt, "MUST PRESERVE") {
-		t.Error("prompt does not contain preserve instruction")
+	if !strings.Contains(prompt, "DO NOT REDECLARE") {
+		t.Error("prompt does not contain redeclaration warning")
 	}
 	if !strings.Contains(prompt, "TestAdd") {
-		t.Error("prompt does not contain existing test text")
+		t.Error("prompt does not contain existing test name TestAdd")
+	}
+	if !strings.Contains(prompt, "TestMultiply_Basic") {
+		t.Error("prompt does not contain existing test name TestMultiply_Basic")
+	}
+	if strings.Contains(prompt, "// existing test") {
+		t.Error("prompt should not contain full test body")
 	}
 }
 
 func TestBuildUserPrompt_WithoutExistingTests(t *testing.T) {
 	req := sampleRequest()
-	req.ExistingTests = ""
+	req.ExistingTestNames = nil
 	prompt := BuildUserPrompt(req)
 
 	if strings.Contains(prompt, "Existing Tests") {
 		t.Error("prompt contains existing tests section when there are none")
+	}
+}
+
+func TestExtractTestFuncNames(t *testing.T) {
+	src := `package foo_test
+
+import "testing"
+
+func TestA(t *testing.T) {}
+func TestB(t *testing.T) {}
+func helperFunc() {}
+`
+	names := ExtractTestFuncNames(src)
+	if len(names) != 3 {
+		t.Fatalf("expected 3 names, got %d: %v", len(names), names)
+	}
+	if names[0] != "TestA" || names[1] != "TestB" || names[2] != "helperFunc" {
+		t.Errorf("unexpected names: %v", names)
+	}
+}
+
+func TestExtractTestFuncNames_Empty(t *testing.T) {
+	names := ExtractTestFuncNames("")
+	if names != nil {
+		t.Errorf("expected nil for empty input, got %v", names)
 	}
 }
 

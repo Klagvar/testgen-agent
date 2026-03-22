@@ -39,7 +39,8 @@ type Config struct {
 	NoCoverage   bool `yaml:"no_coverage"`
 
 	// Prompt customization
-	CustomPrompt string `yaml:"custom_prompt"`
+	CustomPrompt     string `yaml:"custom_prompt"`
+	MaxContextTokens int    `yaml:"max_context_tokens"`
 
 	// Output
 	ReportFormat string `yaml:"report_format"` // "text", "html", "json"
@@ -119,12 +120,27 @@ func findConfigFile(dir string) string {
 	}
 }
 
+// DefaultExcludes are always applied unless the file is in include_only.
+var DefaultExcludes = []string{
+	"*.pb.go",
+	"*_generated.go",
+	"*_gen.go",
+	"vendor/**",
+}
+
 // ShouldExclude checks if a file path should be excluded based on config.
 func (c *Config) ShouldExclude(filePath string) bool {
 	// Normalize to forward slashes
 	normalized := filepath.ToSlash(filePath)
 
-	// Check exclude patterns
+	// Check default excludes first
+	for _, pattern := range DefaultExcludes {
+		if matchGlob(normalized, pattern) {
+			return true
+		}
+	}
+
+	// Check user-defined exclude patterns
 	for _, pattern := range c.Exclude {
 		pattern = filepath.ToSlash(pattern)
 		if matchGlob(normalized, pattern) {
