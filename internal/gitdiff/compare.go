@@ -1,9 +1,9 @@
-// Package gitdiff сравнивает функции между текущей веткой и base branch.
-// Если тело функции не изменилось (только whitespace / комментарии) — можно
-// пропустить вызов LLM, даже если функция попала в diff.
+// Package gitdiff compares functions between the current branch and the base branch.
+// If a function body has not changed (only whitespace/comments), the LLM call
+// can be skipped even if the function appears in the diff.
 //
-// Использует `git show <branch>:<file>` для получения кода из base branch,
-// затем парсит AST обеих версий и сравнивает нормализованные тела функций.
+// Uses `git show <branch>:<file>` to retrieve code from the base branch,
+// then parses the AST of both versions and compares normalized function bodies.
 package gitdiff
 
 import (
@@ -18,14 +18,14 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
 )
 
-// CompareResult — результат сравнения affected functions с базовой веткой.
+// CompareResult holds the comparison result of affected functions against the base branch.
 type CompareResult struct {
-	Changed   []analyzer.FuncInfo // действительно изменённые функции
-	Unchanged []analyzer.FuncInfo // не изменились (whitespace/комменты)
-	New       []analyzer.FuncInfo // новые функции (нет в base)
+	Changed   []analyzer.FuncInfo // actually changed functions
+	Unchanged []analyzer.FuncInfo // unchanged (whitespace/comments only)
+	New       []analyzer.FuncInfo // new functions (not in base)
 }
 
-// GetBaseFileContent получает содержимое файла из base branch через git show.
+// GetBaseFileContent retrieves file content from the base branch via git show.
 func GetBaseFileContent(repoDir, baseBranch, filePath string) (string, error) {
 	// git show origin/main:path/to/file.go
 	ref := baseBranch + ":" + filePath
@@ -34,44 +34,44 @@ func GetBaseFileContent(repoDir, baseBranch, filePath string) (string, error) {
 
 	output, err := cmd.Output()
 	if err != nil {
-		// Файл не существует в base branch — все функции новые
+		// File does not exist in base branch — all functions are new
 		return "", nil
 	}
 
 	return string(output), nil
 }
 
-// FilterChanged сравнивает affected functions с их версиями из base branch.
-// Возвращает CompareResult, разделяя функции на changed/unchanged/new.
+// FilterChanged compares affected functions with their base branch versions.
+// Returns CompareResult, splitting functions into changed/unchanged/new.
 func FilterChanged(
 	affectedFuncs []analyzer.FuncInfo,
 	repoDir, baseBranch, filePath string,
 ) (*CompareResult, error) {
 	result := &CompareResult{}
 
-	// Получаем файл из base branch
+	// Get file from base branch
 	baseContent, err := GetBaseFileContent(repoDir, baseBranch, filePath)
 	if err != nil {
-		// Ошибка git — считаем все функции изменёнными
+		// Git error — treat all functions as changed
 		result.Changed = affectedFuncs
 		return result, fmt.Errorf("git show failed: %w", err)
 	}
 
 	if baseContent == "" {
-		// Файл новый — все функции новые
+		// File is new — all functions are new
 		result.New = affectedFuncs
 		return result, nil
 	}
 
-	// Парсим base-версию файла
+	// Parse base version of the file
 	baseFuncs, err := parseFunctions(baseContent)
 	if err != nil {
-		// Не парсится — считаем все изменёнными
+		// Parse failed — treat all as changed
 		result.Changed = affectedFuncs
 		return result, nil
 	}
 
-	// Строим индекс: funcKey → normalizedBody
+	// Build index: funcKey → normalizedBody
 	baseIndex := make(map[string]string)
 	for _, fn := range baseFuncs {
 		key := funcKey(fn)
@@ -79,7 +79,7 @@ func FilterChanged(
 		baseIndex[key] = body
 	}
 
-	// Сравниваем каждую affected function
+	// Compare each affected function
 	for _, fn := range affectedFuncs {
 		key := funcKey(fn)
 		baseBody, exists := baseIndex[key]
@@ -101,7 +101,7 @@ func FilterChanged(
 	return result, nil
 }
 
-// funcKey формирует уникальный ключ для функции (с учётом ресивера).
+// funcKey builds a unique key for a function (including receiver).
 func funcKey(fn analyzer.FuncInfo) string {
 	if fn.Receiver != "" {
 		return fn.Receiver + "." + fn.Name
@@ -109,7 +109,7 @@ func funcKey(fn analyzer.FuncInfo) string {
 	return fn.Name
 }
 
-// parseFunctions парсит исходный код Go и извлекает функции.
+// parseFunctions parses Go source code and extracts functions.
 func parseFunctions(src string) ([]analyzer.FuncInfo, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", src, parser.ParseComments)
@@ -133,7 +133,7 @@ func parseFunctions(src string) ([]analyzer.FuncInfo, error) {
 	return funcs, nil
 }
 
-// extractFuncBasic извлекает базовую информацию о функции для сравнения.
+// extractFuncBasic extracts basic function info for comparison.
 func extractFuncBasic(fset *token.FileSet, fn *ast.FuncDecl, lines []string) analyzer.FuncInfo {
 	startPos := fset.Position(fn.Pos())
 	endPos := fset.Position(fn.End())
@@ -142,12 +142,12 @@ func extractFuncBasic(fset *token.FileSet, fn *ast.FuncDecl, lines []string) ana
 		Name: fn.Name.Name,
 	}
 
-	// Ресивер
+	// Receiver
 	if fn.Recv != nil && len(fn.Recv.List) > 0 {
 		fi.Receiver = exprToString(fn.Recv.List[0].Type)
 	}
 
-	// Тело функции
+	// Function body
 	if startPos.Line >= 1 && endPos.Line <= len(lines) {
 		bodyLines := lines[startPos.Line-1 : endPos.Line]
 		fi.Body = strings.Join(bodyLines, "\n")
@@ -156,42 +156,42 @@ func extractFuncBasic(fset *token.FileSet, fn *ast.FuncDecl, lines []string) ana
 	return fi
 }
 
-// normalizeBody нормализует тело функции для сравнения:
-// - Убирает комментарии
-// - Нормализует whitespace через go/format
-// - Результат позволяет сравнивать логику, игнорируя форматирование
+// normalizeBody normalizes a function body for comparison:
+// - Strips comments
+// - Normalizes whitespace via go/format
+// - The result allows comparing logic while ignoring formatting
 func normalizeBody(body string) (string, error) {
 	if body == "" {
 		return "", nil
 	}
 
-	// Оборачиваем тело в package для парсинга
+	// Wrap body in package for parsing
 	wrapped := "package tmp\n" + body
 	fset := token.NewFileSet()
 
-	file, err := parser.ParseFile(fset, "", wrapped, 0) // без ParseComments — комменты убираются
+	file, err := parser.ParseFile(fset, "", wrapped, 0) // without ParseComments — comments are stripped
 	if err != nil {
-		// Если не парсится — сравниваем как есть (строковое сравнение)
+		// If parsing fails — compare as-is (string comparison)
 		return normalizeString(body), nil
 	}
 
-	// Форматируем AST обратно в код (нормализует whitespace)
+	// Format AST back to code (normalizes whitespace)
 	var buf strings.Builder
 	if err := format.Node(&buf, fset, file); err != nil {
 		return normalizeString(body), nil
 	}
 
-	// Убираем "package tmp\n" обёртку
+	// Remove "package tmp\n" wrapper
 	result := buf.String()
 	if idx := strings.Index(result, "\n"); idx >= 0 {
 		result = result[idx+1:]
 	}
 
-	// Убираем пустые строки для стабильного сравнения
+	// Remove blank lines for stable comparison
 	return stripBlankLines(strings.TrimSpace(result)), nil
 }
 
-// stripBlankLines убирает пустые строки из текста.
+// stripBlankLines removes blank lines from text.
 func stripBlankLines(s string) string {
 	lines := strings.Split(s, "\n")
 	var result []string
@@ -203,13 +203,13 @@ func stripBlankLines(s string) string {
 	return strings.Join(result, "\n")
 }
 
-// normalizeString выполняет простую нормализацию строки.
+// normalizeString performs simple string normalization.
 func normalizeString(s string) string {
 	lines := strings.Split(s, "\n")
 	var result []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Пропускаем пустые строки и строки-комментарии
+		// Skip blank lines and comment lines
 		if trimmed == "" {
 			continue
 		}
@@ -221,7 +221,7 @@ func normalizeString(s string) string {
 	return strings.Join(result, "\n")
 }
 
-// exprToString конвертирует AST-выражение типа в строку.
+// exprToString converts an AST type expression to a string.
 func exprToString(expr ast.Expr) string {
 	switch t := expr.(type) {
 	case *ast.Ident:

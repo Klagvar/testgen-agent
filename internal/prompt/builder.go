@@ -1,5 +1,5 @@
-// Package prompt формирует структурированные промпты для LLM
-// на основе результатов diff-парсинга и AST-анализа.
+// Package prompt builds structured prompts for the LLM
+// based on diff parsing and AST analysis results.
 package prompt
 
 import (
@@ -9,21 +9,21 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
 )
 
-// TestGenRequest — входные данные для генерации промпта.
+// TestGenRequest holds input data for prompt generation.
 type TestGenRequest struct {
-	PackageName      string                       // имя пакета
-	FilePath         string                       // путь к файлу
-	Imports          []string                     // импорты файла
-	TargetFuncs      []analyzer.FuncInfo          // затронутые функции
-	ExistingTests    string                       // существующие тесты (если есть)
-	UsedTypes        []analyzer.TypeInfo          // типы из пакета, используемые функциями
-	CalledFuncs      []analyzer.FuncInfo          // вызываемые функции из пакета (кросс-файловые)
-	CustomPrompt     string                       // дополнительные инструкции из .testgen.yml
+	PackageName      string                       // package name
+	FilePath         string                       // file path
+	Imports          []string                     // file imports
+	TargetFuncs      []analyzer.FuncInfo          // affected functions
+	ExistingTests    string                       // existing tests (if any)
+	UsedTypes        []analyzer.TypeInfo          // package types used by functions
+	CalledFuncs      []analyzer.FuncInfo          // called functions from the package (cross-file)
+	CustomPrompt     string                       // additional instructions from .testgen.yml
 	ConcurrencyInfos map[string]analyzer.ConcurrencyInfo // funcName → concurrency info
 	RaceDetection    bool                         // run with -race flag
 }
 
-// BuildSystemPrompt формирует системный промпт — инструкции для LLM.
+// BuildSystemPrompt builds the system prompt — instructions for the LLM.
 func BuildSystemPrompt() string {
 	return `You are an expert Go developer specializing in writing unit tests.
 
@@ -67,13 +67,13 @@ Return ONLY the Go test file code — no explanations, no markdown wrappers.
 Code must start with "package ..." and be valid, compilable Go code.`
 }
 
-// BuildUserPrompt формирует пользовательский промпт с контекстом функций.
+// BuildUserPrompt builds the user prompt with function context.
 func BuildUserPrompt(req TestGenRequest) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("Generate unit tests for package `%s` (file `%s`).\n\n", req.PackageName, req.FilePath))
 
-	// Импорты файла
+	// File imports
 	if len(req.Imports) > 0 {
 		sb.WriteString("## Source File Imports\n\n```go\nimport (\n")
 		for _, imp := range req.Imports {
@@ -82,7 +82,7 @@ func BuildUserPrompt(req TestGenRequest) string {
 		sb.WriteString(")\n```\n\n")
 	}
 
-	// Типы из пакета (если есть)
+	// Package types (if any)
 	if len(req.UsedTypes) > 0 {
 		sb.WriteString("## Type Definitions (from the same package)\n\n")
 		sb.WriteString("These types are used by the functions under test. Use them to correctly construct test data.\n\n")
@@ -115,7 +115,7 @@ func BuildUserPrompt(req TestGenRequest) string {
 		}
 	}
 
-	// Вызываемые функции из пакета (кросс-файловый контекст)
+	// Called functions from the package (cross-file context)
 	if len(req.CalledFuncs) > 0 {
 		sb.WriteString("## Helper Functions (called by functions under test)\n\n")
 		sb.WriteString("These functions are called internally. You do NOT need to test them, but knowing their signatures helps write correct tests.\n\n")
@@ -129,26 +129,26 @@ func BuildUserPrompt(req TestGenRequest) string {
 		sb.WriteString("\n")
 	}
 
-	// Функции для тестирования
+	// Functions to test
 	sb.WriteString(fmt.Sprintf("## Functions to Test (%d)\n\n", len(req.TargetFuncs)))
 
 	for i, fn := range req.TargetFuncs {
 		sb.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, fn.Name))
 
-		// Ресивер
+		// Receiver
 		if fn.Receiver != "" {
 			sb.WriteString(fmt.Sprintf("**Receiver:** `%s` — this is a method. Create an instance of the receiver type in the test.\n\n", fn.Receiver))
 		}
 
-		// Сигнатура
+		// Signature
 		sb.WriteString(fmt.Sprintf("**Signature:** `%s`\n\n", fn.Signature))
 
-		// Документация
+		// Documentation
 		if fn.DocComment != "" {
 			sb.WriteString(fmt.Sprintf("**Documentation:** %s\n", strings.TrimSpace(fn.DocComment)))
 		}
 
-		// Параметры
+		// Parameters
 		if len(fn.Params) > 0 {
 			sb.WriteString("**Parameters:**\n")
 			for _, p := range fn.Params {
@@ -157,17 +157,17 @@ func BuildUserPrompt(req TestGenRequest) string {
 			sb.WriteString("\n")
 		}
 
-		// Возвращаемые типы
+		// Return types
 		if len(fn.Returns) > 0 {
 			sb.WriteString(fmt.Sprintf("**Returns:** `%s`\n\n", strings.Join(fn.Returns, ", ")))
 		}
 
-		// Тело функции
+		// Function body
 		sb.WriteString("**Implementation:**\n\n```go\n")
 		sb.WriteString(fn.Body)
 		sb.WriteString("\n```\n\n")
 
-		// Анализ ветвлений
+		// Branch analysis
 		branches := analyzeBranches(fn.Body)
 		if len(branches) > 0 {
 			sb.WriteString("**Code branches:**\n")
@@ -192,7 +192,7 @@ func BuildUserPrompt(req TestGenRequest) string {
 		sb.WriteString("---\n\n")
 	}
 
-	// Существующие тесты
+	// Existing tests
 	if req.ExistingTests != "" {
 		sb.WriteString("## Existing Tests (MUST PRESERVE)\n\n")
 		sb.WriteString("The test file already contains tests. You MUST include ALL of them in your output UNCHANGED.\n")
@@ -208,7 +208,7 @@ func BuildUserPrompt(req TestGenRequest) string {
 	return sb.String()
 }
 
-// extractCallArgs извлекает аргументы для вызова функции из сигнатуры.
+// extractCallArgs extracts call arguments from a function signature.
 // "(id string) (*Entity, error)" → "(id)"
 func extractCallArgs(sig string) string {
 	parenEnd := strings.Index(sig, ")")
@@ -232,7 +232,7 @@ func extractCallArgs(sig string) string {
 	return "(" + strings.Join(args, ", ") + ")"
 }
 
-// analyzeBranches — простой анализ ветвлений в теле функции для подсказки LLM.
+// analyzeBranches performs a simple branch analysis of the function body for LLM hints.
 func analyzeBranches(body string) []string {
 	var branches []string
 
@@ -264,7 +264,7 @@ func analyzeBranches(body string) []string {
 	return branches
 }
 
-// BuildMessages формирует массив сообщений для LLM API.
+// BuildMessages builds a message array for the LLM API.
 func BuildMessages(req TestGenRequest) []Message {
 	systemPrompt := BuildSystemPrompt()
 	if req.CustomPrompt != "" {
@@ -276,8 +276,8 @@ func BuildMessages(req TestGenRequest) []Message {
 	}
 }
 
-// BuildFixMessages формирует сообщения для повторной попытки —
-// отправляем LLM предыдущий код + ошибки и просим исправить.
+// BuildFixMessages builds messages for a retry attempt —
+// sends the LLM the previous code + errors and asks for a fix.
 func BuildFixMessages(req TestGenRequest, previousCode string, errors string, attempt int) []Message {
 	fixPrompt := buildFixPrompt(previousCode, errors, attempt)
 
@@ -289,7 +289,7 @@ func BuildFixMessages(req TestGenRequest, previousCode string, errors string, at
 	}
 }
 
-// buildFixPrompt формирует промпт с описанием ошибки для исправления.
+// buildFixPrompt builds a prompt with the error description for fixing.
 func buildFixPrompt(previousCode string, errors string, attempt int) string {
 	var sb strings.Builder
 
@@ -314,17 +314,17 @@ func buildFixPrompt(previousCode string, errors string, attempt int) string {
 	return sb.String()
 }
 
-// CoverageGapRequest — данные для догенерации тестов по непокрытым строкам.
+// CoverageGapRequest holds data for re-generating tests for uncovered lines.
 type CoverageGapRequest struct {
-	TestGenRequest                  // базовый запрос с функциями
-	ExistingTestCode string        // текущий код тестов
-	UncoveredLines   []int         // непокрытые строки
-	CurrentCoverage  float64       // текущий diff coverage (%)
-	Iteration        int           // номер итерации догенерации
+	TestGenRequest                  // base request with functions
+	ExistingTestCode string        // current test code
+	UncoveredLines   []int         // uncovered lines
+	CurrentCoverage  float64       // current diff coverage (%)
+	Iteration        int           // re-generation iteration number
 }
 
-// BuildCoverageGapMessages формирует промпт для догенерации тестов,
-// покрывающих непокрытые строки кода.
+// BuildCoverageGapMessages builds a prompt for re-generating tests
+// that cover uncovered lines of code.
 func BuildCoverageGapMessages(req CoverageGapRequest) []Message {
 	gapPrompt := buildCoverageGapPrompt(req)
 
@@ -334,7 +334,7 @@ func BuildCoverageGapMessages(req CoverageGapRequest) []Message {
 	}
 }
 
-// buildCoverageGapPrompt формирует промпт для покрытия непокрытых строк.
+// buildCoverageGapPrompt builds a prompt for covering uncovered lines.
 func buildCoverageGapPrompt(req CoverageGapRequest) string {
 	var sb strings.Builder
 
@@ -342,10 +342,10 @@ func buildCoverageGapPrompt(req CoverageGapRequest) string {
 	sb.WriteString(fmt.Sprintf("Package: `%s`, file: `%s`\n\n", req.PackageName, req.FilePath))
 	sb.WriteString(fmt.Sprintf("Current diff coverage: **%.1f%%**. Need to improve it.\n\n", req.CurrentCoverage))
 
-	// Функции с непокрытыми строками
+	// Functions with uncovered lines
 	sb.WriteString("## Functions with Uncovered Lines\n\n")
 	for _, fn := range req.TargetFuncs {
-		// Определяем непокрытые строки внутри этой функции
+		// Determine uncovered lines within this function
 		var uncovInFunc []int
 		for _, line := range req.UncoveredLines {
 			if line >= fn.StartLine && line <= fn.EndLine {
@@ -364,7 +364,7 @@ func buildCoverageGapPrompt(req CoverageGapRequest) string {
 
 		sb.WriteString(fmt.Sprintf("**Uncovered lines:** %v (relative to file)\n\n", uncovInFunc))
 
-		// Анализ ветвлений
+		// Branch analysis
 		branches := analyzeBranches(fn.Body)
 		if len(branches) > 0 {
 			sb.WriteString("**Code branches (focus on uncovered ones):**\n")
@@ -377,7 +377,7 @@ func buildCoverageGapPrompt(req CoverageGapRequest) string {
 		sb.WriteString("---\n\n")
 	}
 
-	// Текущие тесты
+	// Current tests
 	sb.WriteString("## Existing Tests (MUST PRESERVE)\n\n")
 	sb.WriteString("The test file already has tests. You MUST include ALL of them UNCHANGED.\n")
 	sb.WriteString("Add NEW test cases to cover the uncovered lines listed above.\n\n")
@@ -396,7 +396,7 @@ func buildCoverageGapPrompt(req CoverageGapRequest) string {
 	return sb.String()
 }
 
-// Message — одно сообщение для LLM API.
+// Message represents a single message for the LLM API.
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`

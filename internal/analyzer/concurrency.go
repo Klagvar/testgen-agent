@@ -7,39 +7,39 @@ import (
 	"strings"
 )
 
-// ConcurrencyInfo описывает паттерны конкурентности, обнаруженные в функции.
+// ConcurrencyInfo describes concurrency patterns detected in a function.
 type ConcurrencyInfo struct {
-	HasGoroutines  bool     // go func() или go identifier()
+	HasGoroutines  bool     // go func() or go identifier()
 	HasMutex       bool     // sync.Mutex, sync.RWMutex
 	HasChannels    bool     // chan, <-
 	HasWaitGroup   bool     // sync.WaitGroup
 	HasAtomic      bool     // sync/atomic
 	HasOnce        bool     // sync.Once
-	Patterns       []string // человекочитаемые описания найденных паттернов
-	IsConcurrent   bool     // true если хотя бы один паттерн обнаружен
+	Patterns       []string // human-readable descriptions of detected patterns
+	IsConcurrent   bool     // true if at least one pattern is detected
 }
 
-// DetectConcurrency анализирует функцию на наличие паттернов конкурентности.
-// Проверяет тело функции, параметры и используемые типы.
+// DetectConcurrency analyzes a function for concurrency patterns.
+// Checks the function body, parameters, and used types.
 func DetectConcurrency(fn FuncInfo, usedTypes []TypeInfo) ConcurrencyInfo {
 	info := ConcurrencyInfo{}
 
-	// 1. Анализ тела функции через AST
+	// 1. Analyze function body via AST
 	if fn.Body != "" {
 		detectInBody(fn.Body, &info)
 	}
 
-	// 2. Анализ параметров
+	// 2. Analyze parameters
 	for _, p := range fn.Params {
 		detectInType(p.Type, &info)
 	}
 
-	// 3. Анализ возвращаемых типов
+	// 3. Analyze return types
 	for _, r := range fn.Returns {
 		detectInType(r, &info)
 	}
 
-	// 4. Анализ типа ресивера
+	// 4. Analyze receiver type
 	if fn.Receiver != "" {
 		for _, ti := range usedTypes {
 			recvName := strings.TrimPrefix(fn.Receiver, "*")
@@ -55,14 +55,14 @@ func DetectConcurrency(fn FuncInfo, usedTypes []TypeInfo) ConcurrencyInfo {
 	return info
 }
 
-// detectInBody анализирует тело функции через AST.
+// detectInBody analyzes the function body via AST.
 func detectInBody(body string, info *ConcurrencyInfo) {
-	// Оборачиваем тело в package для парсинга
+	// Wrap body in package for parsing
 	wrapped := "package tmp\n" + body
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", wrapped, 0)
 	if err != nil {
-		// Если AST не парсится — ищем текстово
+		// If AST parsing fails, fall back to text search
 		detectInString(body, info)
 		return
 	}
@@ -70,7 +70,7 @@ func detectInBody(body string, info *ConcurrencyInfo) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.GoStmt:
-			// go func() { ... }() или go someFunc()
+			// go func() { ... }() or go someFunc()
 			info.HasGoroutines = true
 			addPattern(info, "goroutine launch (go statement)")
 
@@ -110,11 +110,11 @@ func detectInBody(body string, info *ConcurrencyInfo) {
 		return true
 	})
 
-	// Дополнительно: текстовый поиск для import-зависимых паттернов
+	// Additionally: text search for import-dependent patterns
 	detectInString(body, info)
 }
 
-// detectSelectorPattern обнаруживает паттерны вида sync.Mutex, atomic.AddInt64 и т.д.
+// detectSelectorPattern detects patterns like sync.Mutex, atomic.AddInt64, etc.
 func detectSelectorPattern(pkg, sel string, info *ConcurrencyInfo) {
 	switch pkg {
 	case "sync":
@@ -135,7 +135,7 @@ func detectSelectorPattern(pkg, sel string, info *ConcurrencyInfo) {
 	}
 }
 
-// detectInType анализирует строковое представление типа.
+// detectInType analyzes the string representation of a type.
 func detectInType(typeStr string, info *ConcurrencyInfo) {
 	if strings.HasPrefix(typeStr, "chan ") || typeStr == "chan" ||
 		strings.HasPrefix(typeStr, "<-chan") || strings.HasPrefix(typeStr, "chan<-") {
@@ -144,7 +144,7 @@ func detectInType(typeStr string, info *ConcurrencyInfo) {
 	}
 }
 
-// detectInTypeInfo анализирует TypeInfo (структуру ресивера).
+// detectInTypeInfo analyzes TypeInfo (receiver struct).
 func detectInTypeInfo(ti TypeInfo, info *ConcurrencyInfo) {
 	for _, field := range ti.Fields {
 		fieldType := field.Type
@@ -175,7 +175,7 @@ func detectInTypeInfo(ti TypeInfo, info *ConcurrencyInfo) {
 	}
 }
 
-// detectInString — текстовый поиск паттернов (fallback и дополнение к AST).
+// detectInString performs text-based pattern search (fallback and supplement to AST).
 func detectInString(body string, info *ConcurrencyInfo) {
 	if strings.Contains(body, "sync.Mutex") || strings.Contains(body, "sync.RWMutex") {
 		if !info.HasMutex {
@@ -203,7 +203,7 @@ func detectInString(body string, info *ConcurrencyInfo) {
 	}
 }
 
-// addPattern добавляет паттерн, избегая дубликатов.
+// addPattern adds a pattern, avoiding duplicates.
 func addPattern(info *ConcurrencyInfo, pattern string) {
 	for _, p := range info.Patterns {
 		if p == pattern {
@@ -213,7 +213,7 @@ func addPattern(info *ConcurrencyInfo, pattern string) {
 	info.Patterns = append(info.Patterns, pattern)
 }
 
-// ConcurrencyHint возвращает строку-подсказку для LLM промпта.
+// ConcurrencyHint returns a hint string for the LLM prompt.
 func (ci ConcurrencyInfo) ConcurrencyHint() string {
 	if !ci.IsConcurrent {
 		return ""

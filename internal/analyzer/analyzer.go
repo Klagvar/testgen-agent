@@ -1,5 +1,5 @@
-// Package analyzer использует go/ast для анализа Go-файлов:
-// поиск функций по номерам строк, извлечение сигнатур, типов, зависимостей.
+// Package analyzer uses go/ast for Go file analysis:
+// finding functions by line numbers, extracting signatures, types, and dependencies.
 package analyzer
 
 import (
@@ -12,82 +12,82 @@ import (
 	"strings"
 )
 
-// FuncInfo содержит информацию об одной функции, извлечённую из AST.
+// FuncInfo contains information about a single function extracted from AST.
 type FuncInfo struct {
-	Name       string   // имя функции
-	Receiver   string   // ресивер (для методов), например "*Calculator"
-	StartLine  int      // первая строка функции
-	EndLine    int      // последняя строка функции
-	Signature  string   // полная сигнатура: func(a int, b int) (int, error)
-	Params     []Param  // параметры
-	Returns    []string // типы возвращаемых значений
-	Body       string   // тело функции (исходный код)
-	DocComment string   // комментарий над функцией
+	Name       string   // function name
+	Receiver   string   // receiver (for methods), e.g. "*Calculator"
+	StartLine  int      // first line of the function
+	EndLine    int      // last line of the function
+	Signature  string   // full signature: func(a int, b int) (int, error)
+	Params     []Param  // parameters
+	Returns    []string // return types
+	Body       string   // function body (source code)
+	DocComment string   // doc comment above the function
 }
 
-// Param — параметр функции.
+// Param represents a function parameter.
 type Param struct {
 	Name string
 	Type string
 }
 
-// TypeInfo — информация о type-декларации (struct, interface, alias).
+// TypeInfo holds information about a type declaration (struct, interface, alias).
 type TypeInfo struct {
-	Name       string       // имя типа
+	Name       string       // type name
 	Kind       string       // "struct", "interface", "alias", "other"
-	Fields     []FieldInfo  // поля структуры
-	Methods    []MethodInfo // методы интерфейса
-	Underlying string       // базовый тип для алиасов
-	Source     string       // исходный код декларации
+	Fields     []FieldInfo  // struct fields
+	Methods    []MethodInfo // interface methods
+	Underlying string       // underlying type for aliases
+	Source     string       // source code of the declaration
 }
 
-// FieldInfo — поле структуры.
+// FieldInfo represents a struct field.
 type FieldInfo struct {
 	Name string
 	Type string
-	Tag  string // struct tag (если есть)
+	Tag  string // struct tag (if any)
 }
 
-// MethodInfo — метод интерфейса.
+// MethodInfo represents an interface method.
 type MethodInfo struct {
 	Name      string
 	Signature string // (params) returns
 }
 
-// FileAnalysis — результат анализа одного Go-файла.
+// FileAnalysis holds the analysis result for a single Go file.
 type FileAnalysis struct {
-	Package   string      // имя пакета
-	Imports   []string    // список импортов
-	Functions []FuncInfo  // все функции в файле
-	Types     []TypeInfo  // type-декларации (struct, interface, alias)
-	FilePath  string      // путь к файлу
+	Package   string      // package name
+	Imports   []string    // import list
+	Functions []FuncInfo  // all functions in the file
+	Types     []TypeInfo  // type declarations (struct, interface, alias)
+	FilePath  string      // file path
 }
 
-// PackageAnalysis — результат анализа всего пакета (все .go файлы).
+// PackageAnalysis holds the analysis result for an entire package (all .go files).
 type PackageAnalysis struct {
-	Package   string            // имя пакета
-	Files     []*FileAnalysis   // анализ каждого файла
-	AllTypes  []TypeInfo        // все типы из всех файлов пакета
-	AllFuncs  []FuncInfo        // все функции из всех файлов пакета
-	FuncIndex map[string]FuncInfo // имя → FuncInfo (для быстрого поиска)
+	Package   string            // package name
+	Files     []*FileAnalysis   // analysis of each file
+	AllTypes  []TypeInfo        // all types from all package files
+	AllFuncs  []FuncInfo        // all functions from all package files
+	FuncIndex map[string]FuncInfo // name → FuncInfo (for quick lookup)
 }
 
-// AnalyzeFile парсит Go-файл и возвращает информацию о всех функциях.
+// AnalyzeFile parses a Go file and returns information about all functions.
 func AnalyzeFile(filePath string) (*FileAnalysis, error) {
 	src, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось прочитать файл %s: %w", filePath, err)
+		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
 	}
 
 	return AnalyzeSource(filePath, string(src))
 }
 
-// AnalyzeSource парсит исходный код Go и возвращает информацию о всех функциях.
+// AnalyzeSource parses Go source code and returns information about all functions.
 func AnalyzeSource(filename, src string) (*FileAnalysis, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка парсинга Go-файла: %w", err)
+		return nil, fmt.Errorf("error parsing Go file: %w", err)
 	}
 
 	analysis := &FileAnalysis{
@@ -95,16 +95,16 @@ func AnalyzeSource(filename, src string) (*FileAnalysis, error) {
 		FilePath: filename,
 	}
 
-	// Извлекаем импорты
+	// Extract imports
 	for _, imp := range file.Imports {
-		path := imp.Path.Value // строка в кавычках, например `"fmt"`
+		path := imp.Path.Value // quoted string, e.g. "fmt"
 		path = strings.Trim(path, `"`)
 		analysis.Imports = append(analysis.Imports, path)
 	}
 
 	lines := strings.Split(src, "\n")
 
-	// Извлекаем типы (struct, interface, alias)
+	// Extract types (struct, interface, alias)
 	for _, decl := range file.Decls {
 		genDecl, ok := decl.(*ast.GenDecl)
 		if !ok || genDecl.Tok != token.TYPE {
@@ -120,7 +120,7 @@ func AnalyzeSource(filename, src string) (*FileAnalysis, error) {
 		}
 	}
 
-	// Извлекаем функции
+	// Extract functions
 	for _, decl := range file.Decls {
 		funcDecl, ok := decl.(*ast.FuncDecl)
 		if !ok {
@@ -134,8 +134,8 @@ func AnalyzeSource(filename, src string) (*FileAnalysis, error) {
 	return analysis, nil
 }
 
-// AnalyzePackage анализирует все .go файлы в директории пакета.
-// Возвращает агрегированный результат с типами и функциями из всех файлов.
+// AnalyzePackage analyzes all .go files in the package directory.
+// Returns an aggregated result with types and functions from all files.
 func AnalyzePackage(dir string) (*PackageAnalysis, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -158,7 +158,7 @@ func AnalyzePackage(dir string) (*PackageAnalysis, error) {
 		filePath := filepath.Join(dir, name)
 		analysis, err := AnalyzeFile(filePath)
 		if err != nil {
-			continue // пропускаем файлы с ошибками парсинга
+			continue // skip files that fail to parse
 		}
 
 		if pkg.Package == "" {
@@ -170,7 +170,7 @@ func AnalyzePackage(dir string) (*PackageAnalysis, error) {
 
 		for _, fn := range analysis.Functions {
 			pkg.AllFuncs = append(pkg.AllFuncs, fn)
-			// Для методов: ключ = "ReceiverType.MethodName"
+			// For methods: key = "ReceiverType.MethodName"
 			if fn.Receiver != "" {
 				recvName := strings.TrimPrefix(fn.Receiver, "*")
 				pkg.FuncIndex[recvName+"."+fn.Name] = fn
@@ -182,41 +182,41 @@ func AnalyzePackage(dir string) (*PackageAnalysis, error) {
 	return pkg, nil
 }
 
-// FindUsedTypes определяет, какие типы из пакета использует данная функция.
-// Проверяет параметры, возвращаемые значения и ресивер.
+// FindUsedTypes determines which package types are used by the given function.
+// Checks parameters, return values, and receiver.
 func FindUsedTypes(fn FuncInfo, allTypes []TypeInfo) []TypeInfo {
-	// Собираем имена типов из сигнатуры функции
+	// Collect type names from the function signature
 	typeNames := make(map[string]bool)
 
-	// Ресивер
+	// Receiver
 	if fn.Receiver != "" {
 		name := strings.TrimPrefix(fn.Receiver, "*")
 		typeNames[name] = true
 	}
 
-	// Параметры
+	// Parameters
 	for _, p := range fn.Params {
 		extractTypeNames(p.Type, typeNames)
 	}
 
-	// Возвраты
+	// Returns
 	for _, r := range fn.Returns {
 		extractTypeNames(r, typeNames)
 	}
 
-	// Фильтруем
+	// Filter
 	var used []TypeInfo
 	for _, ti := range allTypes {
 		if typeNames[ti.Name] {
 			used = append(used, ti)
-			// Рекурсивно: если структура содержит другие пользовательские типы
+			// Recursive: if struct contains other user-defined types
 			for _, field := range ti.Fields {
 				extractTypeNames(field.Type, typeNames)
 			}
 		}
 	}
 
-	// Второй проход для рекурсивных зависимостей
+	// Second pass for recursive dependencies
 	for _, ti := range allTypes {
 		if typeNames[ti.Name] {
 			found := false
@@ -235,15 +235,15 @@ func FindUsedTypes(fn FuncInfo, allTypes []TypeInfo) []TypeInfo {
 	return used
 }
 
-// FindCalledFunctions находит функции из пакета, вызываемые внутри данной функции.
-// Возвращает список FuncInfo вызываемых функций.
+// FindCalledFunctions finds package functions called within the given function.
+// Returns a list of FuncInfo for called functions.
 func FindCalledFunctions(fn FuncInfo, pkg *PackageAnalysis) []FuncInfo {
 	if fn.Body == "" {
 		return nil
 	}
 
-	// Парсим тело функции для поиска вызовов
-	// Оборачиваем тело в package + func для парсинга
+	// Parse function body to find calls
+	// Wrap body in package + func for parsing
 	wrapped := fmt.Sprintf("package tmp\n%s", fn.Body)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", wrapped, 0)
@@ -261,10 +261,10 @@ func FindCalledFunctions(fn FuncInfo, pkg *PackageAnalysis) []FuncInfo {
 
 		switch fun := callExpr.Fun.(type) {
 		case *ast.Ident:
-			// Простой вызов: Helper()
+			// Simple call: Helper()
 			calledNames[fun.Name] = true
 		case *ast.SelectorExpr:
-			// Вызов метода: obj.Method() или pkg.Func()
+			// Method call: obj.Method() or pkg.Func()
 			if ident, ok := fun.X.(*ast.Ident); ok {
 				calledNames[ident.Name+"."+fun.Sel.Name] = true
 				calledNames[fun.Sel.Name] = true
@@ -274,13 +274,13 @@ func FindCalledFunctions(fn FuncInfo, pkg *PackageAnalysis) []FuncInfo {
 		return true
 	})
 
-	// Сопоставляем с функциями пакета
+	// Match against package functions
 	var called []FuncInfo
 	seen := make(map[string]bool)
 
 	for name := range calledNames {
 		if fi, ok := pkg.FuncIndex[name]; ok {
-			if fi.Name != fn.Name && !seen[fi.Name] { // не рекурсия
+			if fi.Name != fn.Name && !seen[fi.Name] { // not recursion
 				called = append(called, fi)
 				seen[fi.Name] = true
 			}
@@ -290,15 +290,15 @@ func FindCalledFunctions(fn FuncInfo, pkg *PackageAnalysis) []FuncInfo {
 	return called
 }
 
-// extractTypeNames извлекает имена пользовательских типов из строки типа.
+// extractTypeNames extracts user-defined type names from a type string.
 func extractTypeNames(typeStr string, names map[string]bool) {
-	// Убираем модификаторы: *, [], map[...]
+	// Remove modifiers: *, [], map[...]
 	clean := typeStr
 	clean = strings.TrimPrefix(clean, "*")
 	clean = strings.TrimPrefix(clean, "[]")
 	clean = strings.TrimPrefix(clean, "...")
 
-	// Убираем map[Key]
+	// Remove map[Key]
 	if strings.HasPrefix(clean, "map[") {
 		idx := strings.Index(clean, "]")
 		if idx > 0 {
@@ -308,7 +308,7 @@ func extractTypeNames(typeStr string, names map[string]bool) {
 		}
 	}
 
-	// Пропускаем встроенные типы и пакеты
+	// Skip built-in types and packages
 	if isBuiltinType(clean) || strings.Contains(clean, ".") {
 		return
 	}
@@ -318,7 +318,7 @@ func extractTypeNames(typeStr string, names map[string]bool) {
 	}
 }
 
-// isBuiltinType проверяет, является ли тип встроенным.
+// isBuiltinType checks whether the type is built-in.
 func isBuiltinType(t string) bool {
 	builtins := map[string]bool{
 		"bool": true, "byte": true, "complex64": true, "complex128": true,
@@ -332,7 +332,7 @@ func isBuiltinType(t string) bool {
 	return builtins[t]
 }
 
-// extractTypeInfo извлекает информацию о type-декларации.
+// extractTypeInfo extracts information about a type declaration.
 func extractTypeInfo(fset *token.FileSet, ts *ast.TypeSpec, lines []string) TypeInfo {
 	ti := TypeInfo{
 		Name: ts.Name.Name,
@@ -341,7 +341,7 @@ func extractTypeInfo(fset *token.FileSet, ts *ast.TypeSpec, lines []string) Type
 	startPos := fset.Position(ts.Pos())
 	endPos := fset.Position(ts.End())
 
-	// Исходный код
+	// Source code
 	if startPos.Line >= 1 && endPos.Line <= len(lines) {
 		ti.Source = strings.Join(lines[startPos.Line-1:endPos.Line], "\n")
 	}
@@ -406,7 +406,7 @@ func extractTypeInfo(fset *token.FileSet, ts *ast.TypeSpec, lines []string) Type
 	return ti
 }
 
-// funcTypeToString преобразует ast.FuncType в строковую сигнатуру.
+// funcTypeToString converts ast.FuncType to a string signature.
 func funcTypeToString(ft *ast.FuncType) string {
 	var sb strings.Builder
 	sb.WriteString("(")
@@ -451,7 +451,7 @@ func funcTypeToString(ft *ast.FuncType) string {
 	return sb.String()
 }
 
-// extractFuncInfo извлекает информацию о функции из AST-узла.
+// extractFuncInfo extracts function information from an AST node.
 func extractFuncInfo(fset *token.FileSet, fn *ast.FuncDecl, lines []string) FuncInfo {
 	startPos := fset.Position(fn.Pos())
 	endPos := fset.Position(fn.End())
@@ -462,12 +462,12 @@ func extractFuncInfo(fset *token.FileSet, fn *ast.FuncDecl, lines []string) Func
 		EndLine:   endPos.Line,
 	}
 
-	// Ресивер (для методов)
+	// Receiver (for methods)
 	if fn.Recv != nil && len(fn.Recv.List) > 0 {
 		fi.Receiver = exprToString(fn.Recv.List[0].Type)
 	}
 
-	// Параметры
+	// Parameters
 	if fn.Type.Params != nil {
 		for _, field := range fn.Type.Params.List {
 			typeName := exprToString(field.Type)
@@ -484,23 +484,23 @@ func extractFuncInfo(fset *token.FileSet, fn *ast.FuncDecl, lines []string) Func
 		}
 	}
 
-	// Возвращаемые типы
+	// Return types
 	if fn.Type.Results != nil {
 		for _, field := range fn.Type.Results.List {
 			fi.Returns = append(fi.Returns, exprToString(field.Type))
 		}
 	}
 
-	// Сигнатура
+	// Signature
 	fi.Signature = buildSignature(fi)
 
-	// Тело функции (исходный код из строк файла)
+	// Function body (source code from file lines)
 	if startPos.Line >= 1 && endPos.Line <= len(lines) {
 		bodyLines := lines[startPos.Line-1 : endPos.Line]
 		fi.Body = strings.Join(bodyLines, "\n")
 	}
 
-	// Документация
+	// Documentation
 	if fn.Doc != nil {
 		fi.DocComment = fn.Doc.Text()
 	}
@@ -508,7 +508,7 @@ func extractFuncInfo(fset *token.FileSet, fn *ast.FuncDecl, lines []string) Func
 	return fi
 }
 
-// buildSignature строит строковую сигнатуру функции.
+// buildSignature builds a string signature for a function.
 func buildSignature(fi FuncInfo) string {
 	var sb strings.Builder
 
@@ -550,8 +550,8 @@ func buildSignature(fi FuncInfo) string {
 	return sb.String()
 }
 
-// FindFunctionsByLines находит функции, которые пересекаются с данными номерами строк.
-// Это ключевая функция: берём изменённые строки из diff → находим затронутые функции.
+// FindFunctionsByLines finds functions that overlap with the given line numbers.
+// This is the key function: take changed lines from diff → find affected functions.
 func FindFunctionsByLines(analysis *FileAnalysis, changedLines []int) []FuncInfo {
 	lineSet := make(map[int]bool)
 	for _, l := range changedLines {
@@ -571,7 +571,7 @@ func FindFunctionsByLines(analysis *FileAnalysis, changedLines []int) []FuncInfo
 	return result
 }
 
-// exprToString конвертирует AST-выражение типа в строку.
+// exprToString converts an AST type expression to a string.
 func exprToString(expr ast.Expr) string {
 	switch t := expr.(type) {
 	case *ast.Ident:
@@ -592,7 +592,7 @@ func exprToString(expr ast.Expr) string {
 	case *ast.Ellipsis:
 		return "..." + exprToString(t.Elt)
 	case *ast.FuncType:
-		return "func(...)"
+		return "func" + funcTypeToString(t)
 	case *ast.ChanType:
 		return "chan " + exprToString(t.Value)
 	default:

@@ -1,6 +1,6 @@
-// Package mockgen генерирует мок-реализации Go-интерфейсов.
-// Моки создаются детерминистически через AST-анализ (без LLM),
-// что гарантирует корректную компиляцию.
+// Package mockgen generates mock implementations of Go interfaces.
+// Mocks are created deterministically via AST analysis (without LLM),
+// guaranteeing correct compilation.
 package mockgen
 
 import (
@@ -10,15 +10,15 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
 )
 
-// MockDef — определение одного мока.
+// MockDef holds the definition of a single mock.
 type MockDef struct {
-	InterfaceName string // имя исходного интерфейса
-	MockName      string // имя мок-структуры (mockXxx)
-	Code          string // полный Go-код мока
+	InterfaceName string // original interface name
+	MockName      string // mock struct name (mockXxx)
+	Code          string // full Go code of the mock
 }
 
-// GenerateMocks создаёт мок-реализации для переданных интерфейсов.
-// Генерирует структуру с функциональными полями и методы-делегаты.
+// GenerateMocks creates mock implementations for the given interfaces.
+// Generates a struct with function fields and delegate methods.
 func GenerateMocks(types []analyzer.TypeInfo) []MockDef {
 	var mocks []MockDef
 
@@ -34,7 +34,7 @@ func GenerateMocks(types []analyzer.TypeInfo) []MockDef {
 	return mocks
 }
 
-// GenerateMockCode возвращает полный Go-код всех моков, готовый для вставки в _test.go.
+// GenerateMockCode returns the full Go code of all mocks, ready to insert into _test.go.
 func GenerateMockCode(types []analyzer.TypeInfo) string {
 	mocks := GenerateMocks(types)
 	if len(mocks) == 0 {
@@ -58,7 +58,7 @@ func generateMock(ti analyzer.TypeInfo) MockDef {
 
 	var sb strings.Builder
 
-	// Структура с функциональными полями
+	// Struct with function fields
 	sb.WriteString(fmt.Sprintf("// %s is a mock implementation of %s for testing.\n", mockName, ti.Name))
 	sb.WriteString(fmt.Sprintf("type %s struct {\n", mockName))
 
@@ -69,19 +69,19 @@ func generateMock(ti analyzer.TypeInfo) MockDef {
 
 	sb.WriteString("}\n\n")
 
-	// Методы-делегаты
+	// Delegate methods
 	for _, m := range ti.Methods {
 		funcFieldName := m.Name + "Func"
 
 		params, returns := parseMethodSignature(m.Signature)
 
-		// Формируем список аргументов для вызова
+		// Build argument list for the call
 		var callArgs []string
 		for _, p := range params {
 			callArgs = append(callArgs, p.name)
 		}
 
-		// Формируем сигнатуру метода
+		// Build method signature
 		var paramStrs []string
 		for _, p := range params {
 			paramStrs = append(paramStrs, p.name+" "+p.typ)
@@ -100,7 +100,7 @@ func generateMock(ti analyzer.TypeInfo) MockDef {
 
 		sb.WriteString(" {\n")
 
-		// Тело: вызов функционального поля
+		// Body: call the function field
 		callStr := fmt.Sprintf("m.%s(%s)", funcFieldName, strings.Join(callArgs, ", "))
 
 		if len(returns) > 0 {
@@ -124,16 +124,16 @@ type paramInfo struct {
 	typ  string
 }
 
-// parseMethodSignature парсит "(id string, val int) (error)" -> params, returns.
+// parseMethodSignature parses "(id string, val int) (error)" -> params, returns.
 func parseMethodSignature(sig string) ([]paramInfo, []string) {
 	sig = strings.TrimSpace(sig)
 
-	// Разбираем параметры — до первой закрывающей скобки
+	// Parse parameters — up to the first closing parenthesis
 	if !strings.HasPrefix(sig, "(") {
 		return nil, nil
 	}
 
-	// Находим закрывающую скобку для параметров (с учётом вложенности)
+	// Find the closing parenthesis for parameters (accounting for nesting)
 	paramEnd := findClosingParen(sig, 0)
 	if paramEnd < 0 {
 		return nil, nil
@@ -142,7 +142,7 @@ func parseMethodSignature(sig string) ([]paramInfo, []string) {
 	paramsStr := sig[1:paramEnd]
 	returnsStr := strings.TrimSpace(sig[paramEnd+1:])
 
-	// Парсим параметры
+	// Parse parameters
 	var params []paramInfo
 	if paramsStr != "" {
 		parts := splitOutsideParens(paramsStr)
@@ -160,7 +160,7 @@ func parseMethodSignature(sig string) ([]paramInfo, []string) {
 				typ := strings.Join(fields[1:], " ")
 				params = append(params, paramInfo{name: name, typ: typ})
 			} else {
-				// Только тип — генерируем имя
+				// Type only — generate a name
 				paramCounter++
 				params = append(params, paramInfo{
 					name: fmt.Sprintf("arg%d", paramCounter),
@@ -170,7 +170,7 @@ func parseMethodSignature(sig string) ([]paramInfo, []string) {
 		}
 	}
 
-	// Парсим возвращаемые типы
+	// Parse return types
 	var returns []string
 	if returnsStr != "" {
 		if strings.HasPrefix(returnsStr, "(") {
@@ -189,7 +189,7 @@ func parseMethodSignature(sig string) ([]paramInfo, []string) {
 	return params, returns
 }
 
-// findClosingParen находит закрывающую скобку, учитывая вложенность.
+// findClosingParen finds the closing parenthesis, accounting for nesting.
 func findClosingParen(s string, openPos int) int {
 	depth := 0
 	for i := openPos; i < len(s); i++ {
@@ -205,7 +205,7 @@ func findClosingParen(s string, openPos int) int {
 	return -1
 }
 
-// splitOutsideParens разделяет строку по запятым, не внутри скобок.
+// splitOutsideParens splits a string by commas, not inside parentheses.
 func splitOutsideParens(s string) []string {
 	var parts []string
 	depth := 0

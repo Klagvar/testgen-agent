@@ -32,7 +32,7 @@ func TestGenerateMocks_Interface(t *testing.T) {
 
 	t.Logf("Generated mock:\n%s", mock.Code)
 
-	// Должны быть функциональные поля
+	// Should have function fields
 	if !strings.Contains(mock.Code, "GetFunc func") {
 		t.Error("mock should contain GetFunc field")
 	}
@@ -43,7 +43,7 @@ func TestGenerateMocks_Interface(t *testing.T) {
 		t.Error("mock should contain DeleteFunc field")
 	}
 
-	// Должны быть методы-делегаты
+	// Should have delegate methods
 	if !strings.Contains(mock.Code, "func (m *mockRepository) Get(") {
 		t.Error("mock should contain Get method")
 	}
@@ -54,7 +54,7 @@ func TestGenerateMocks_Interface(t *testing.T) {
 		t.Error("mock should contain Delete method")
 	}
 
-	// Тело должно делегировать к функциональному полю
+	// Body should delegate to the function field
 	if !strings.Contains(mock.Code, "return m.GetFunc(id)") {
 		t.Error("Get method should delegate to GetFunc")
 	}

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// FileResult — результат генерации тестов для одного файла.
+// FileResult holds the test generation result for a single file.
 type FileResult struct {
 	File          string
 	Functions     []string
@@ -23,10 +23,10 @@ type FileResult struct {
 	MutantsTotal  int
 	MutantsKilled int
 	Status        string // "success", "partial", "failed"
-	Cached        int    // количество функций из кэша
+	Cached        int    // number of functions from cache
 }
 
-// ReportData — данные для HTML-отчёта.
+// ReportData holds the data for the HTML report.
 type ReportData struct {
 	ProjectName    string
 	Branch         string

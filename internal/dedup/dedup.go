@@ -1,6 +1,6 @@
-// Package dedup удаляет дублирующиеся тест-кейсы из сгенерированного кода.
-// Анализирует table-driven тесты: если два кейса имеют одинаковые входные
-// данные и ожидаемые значения — оставляет один.
+// Package dedup removes duplicate test cases from generated code.
+// Analyzes table-driven tests: if two cases have identical input
+// data and expected values, keeps only one.
 package dedup
 
 import (
@@ -12,16 +12,16 @@ import (
 	"strings"
 )
 
-// Result — результат дедупликации.
+// Result holds the deduplication result.
 type Result struct {
-	Code          string   // очищенный код
-	Removed       int      // количество удалённых дубликатов
-	RemovedNames  []string // имена/описания удалённых кейсов
-	TotalBefore   int      // всего кейсов до
-	TotalAfter    int      // всего кейсов после
+	Code          string   // cleaned code
+	Removed       int      // number of removed duplicates
+	RemovedNames  []string // names/descriptions of removed cases
+	TotalBefore   int      // total cases before
+	TotalAfter    int      // total cases after
 }
 
-// Dedup анализирует тестовый код и удаляет дублирующиеся table-driven test cases.
+// Dedup analyzes test code and removes duplicate table-driven test cases.
 func Dedup(code string) (*Result, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", code, parser.ParseComments)
@@ -32,14 +32,14 @@ func Dedup(code string) (*Result, error) {
 	result := &Result{}
 	modified := false
 
-	// Обходим все функции
+	// Walk all functions
 	for _, decl := range file.Decls {
 		funcDecl, ok := decl.(*ast.FuncDecl)
 		if !ok {
 			continue
 		}
 
-		// Ищем table-driven test patterns
+		// Look for table-driven test patterns
 		if funcDecl.Body == nil {
 			continue
 		}
@@ -59,10 +59,10 @@ func Dedup(code string) (*Result, error) {
 		return result, nil
 	}
 
-	// Форматируем модифицированный AST
+	// Format the modified AST
 	var buf strings.Builder
 	if err := format.Node(&buf, fset, file); err != nil {
-		// Если формат не удался — возвращаем оригинал
+		// If formatting failed — return original
 		result.Code = code
 		result.Removed = 0
 		return result, nil
@@ -72,10 +72,10 @@ func Dedup(code string) (*Result, error) {
 	return result, nil
 }
 
-// deduplicateCompositeLit ищет table-driven test слайс и удаляет дубликаты.
-// Возвращает количество удалённых и их имена.
+// deduplicateCompositeLit finds a table-driven test slice and removes duplicates.
+// Returns the number of removed items and their names.
 func deduplicateCompositeLit(stmt ast.Stmt, fset *token.FileSet, src string) (int, []string) {
-	// Ищем: varName := []struct{...}{...}
+	// Look for: varName := []struct{...}{...}
 	assignStmt, ok := stmt.(*ast.AssignStmt)
 	if !ok || len(assignStmt.Rhs) == 0 {
 		return 0, nil
@@ -86,7 +86,7 @@ func deduplicateCompositeLit(stmt ast.Stmt, fset *token.FileSet, src string) (in
 		return 0, nil
 	}
 
-	// Проверяем что это слайс структур
+	// Verify it's a slice of structs
 	arrayType, ok := compLit.Type.(*ast.ArrayType)
 	if !ok {
 		return 0, nil
@@ -99,7 +99,7 @@ func deduplicateCompositeLit(stmt ast.Stmt, fset *token.FileSet, src string) (in
 		return 0, nil
 	}
 
-	// Извлекаем fingerprints для каждого элемента
+	// Extract fingerprints for each element
 	type caseInfo struct {
 		index       int
 		fingerprint string
@@ -126,7 +126,7 @@ func deduplicateCompositeLit(stmt ast.Stmt, fset *token.FileSet, src string) (in
 		})
 	}
 
-	// Находим дубликаты
+	// Find duplicates
 	seen := make(map[string]int) // fingerprint → first index
 	var toRemove []int
 	var removedNames []string
@@ -144,7 +144,7 @@ func deduplicateCompositeLit(stmt ast.Stmt, fset *token.FileSet, src string) (in
 		return 0, nil
 	}
 
-	// Удаляем дубликаты из CompositeLit (с конца, чтобы индексы не смещались)
+	// Remove duplicates from CompositeLit (from end so indices don't shift)
 	removeSet := make(map[int]bool)
 	for _, idx := range toRemove {
 		removeSet[idx] = true
@@ -161,15 +161,15 @@ func deduplicateCompositeLit(stmt ast.Stmt, fset *token.FileSet, src string) (in
 	return len(toRemove), removedNames
 }
 
-// computeFingerprint вычисляет «отпечаток» тест-кейса по значениям полей.
-// Игнорирует имя кейса (поле "name") — сравнивает только input/output.
+// computeFingerprint computes a fingerprint for a test case based on field values.
+// Ignores the case name ("name" field) — compares only input/output.
 func computeFingerprint(cl *ast.CompositeLit, fset *token.FileSet, src string) string {
 	var parts []string
 
 	for _, elt := range cl.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
-			// Positional: используем как есть
+			// Positional: use as-is
 			parts = append(parts, nodeToString(elt, fset, src))
 			continue
 		}
@@ -179,7 +179,7 @@ func computeFingerprint(cl *ast.CompositeLit, fset *token.FileSet, src string) s
 			keyName = ident.Name
 		}
 
-		// Пропускаем поле "name" — оно не влияет на логику теста
+		// Skip "name" field — it doesn't affect test logic
 		if strings.EqualFold(keyName, "name") {
 			continue
 		}
@@ -190,7 +190,7 @@ func computeFingerprint(cl *ast.CompositeLit, fset *token.FileSet, src string) s
 	return strings.Join(parts, "|")
 }
 
-// extractCaseName извлекает имя тест-кейса (поле "name").
+// extractCaseName extracts the test case name ("name" field).
 func extractCaseName(cl *ast.CompositeLit, fset *token.FileSet, src string) string {
 	for _, elt := range cl.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
@@ -206,7 +206,7 @@ func extractCaseName(cl *ast.CompositeLit, fset *token.FileSet, src string) stri
 	return "<unnamed>"
 }
 
-// nodeToString извлекает строковое представление AST-узла из исходного кода.
+// nodeToString extracts the string representation of an AST node from source code.
 func nodeToString(node ast.Node, fset *token.FileSet, src string) string {
 	start := fset.Position(node.Pos())
 	end := fset.Position(node.End())
@@ -215,7 +215,7 @@ func nodeToString(node ast.Node, fset *token.FileSet, src string) string {
 		return strings.TrimSpace(src[start.Offset:end.Offset])
 	}
 
-	// Fallback: форматируем через go/format
+	// Fallback: format via go/format
 	var buf strings.Builder
 	format.Node(&buf, fset, node)
 	return buf.String()

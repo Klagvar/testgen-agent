@@ -1,5 +1,5 @@
-// Package validator проверяет сгенерированные тесты:
-// компиляция, запуск, анализ ошибок.
+// Package validator verifies generated tests:
+// compilation, execution, and error analysis.
 package validator
 
 import (
@@ -11,62 +11,62 @@ import (
 	"time"
 )
 
-// Result — результат валидации тестов.
+// Result holds the test validation outcome.
 type Result struct {
-	// Компиляция
-	CompileOK    bool   // скомпилировалось ли
-	CompileError string // ошибка компиляции (если есть)
+	// Compilation
+	CompileOK    bool   // whether it compiled
+	CompileError string // compilation error (if any)
 
-	// Запуск тестов
-	TestsOK    bool   // все тесты прошли
-	TestOutput string // вывод go test
-	TestError  string // ошибки при запуске тестов
+	// Test execution
+	TestsOK    bool   // all tests passed
+	TestOutput string // go test output
+	TestError  string // test run errors
 
 	// Race detector
-	HasRaces    bool   // обнаружены data races
-	RaceDetails string // детали data race
+	HasRaces    bool   // data races detected
+	RaceDetails string // data race details
 
-	// Статистика
-	Passed   int           // количество прошедших тестов
-	Failed   int           // количество упавших тестов
-	Duration time.Duration // время выполнения
+	// Statistics
+	Passed   int           // number of passing tests
+	Failed   int           // number of failing tests
+	Duration time.Duration // execution time
 }
 
-// IsValid возвращает true если тесты компилируются и проходят.
+// IsValid returns true if tests compile and pass.
 func (r *Result) IsValid() bool {
 	return r.CompileOK && r.TestsOK
 }
 
-// Summary возвращает краткое описание результата.
+// Summary returns a brief description of the result.
 func (r *Result) Summary() string {
 	if !r.CompileOK {
-		return fmt.Sprintf("❌ Ошибка компиляции:\n%s", r.CompileError)
+		return fmt.Sprintf("❌ Compilation error:\n%s", r.CompileError)
 	}
 	if !r.TestsOK {
-		return fmt.Sprintf("⚠️  Тесты упали (%d passed, %d failed):\n%s", r.Passed, r.Failed, r.TestError)
+		return fmt.Sprintf("⚠️  Tests failed (%d passed, %d failed):\n%s", r.Passed, r.Failed, r.TestError)
 	}
 	if r.HasRaces {
 		return fmt.Sprintf("⚠️  Tests passed but DATA RACE detected (%d passed, %s):\n%s",
 			r.Passed, r.Duration, r.RaceDetails)
 	}
-	return fmt.Sprintf("✅ Все тесты прошли (%d passed, %s)", r.Passed, r.Duration)
+	return fmt.Sprintf("✅ All tests passed (%d passed, %s)", r.Passed, r.Duration)
 }
 
-// FormatFile запускает goimports на файле для автоматического исправления импортов.
-// Если goimports не установлен, использует go fmt.
+// FormatFile runs goimports on a file to auto-fix imports.
+// Falls back to go fmt if goimports is not installed.
 func FormatFile(filePath string) error {
-	// Пробуем goimports (фиксит неиспользуемые и недостающие импорты)
+	// Try goimports (fixes unused and missing imports)
 	cmd := exec.Command("goimports", "-w", filePath)
 	if err := cmd.Run(); err != nil {
-		// Fallback на go fmt (хотя бы отформатирует)
+		// Fallback to go fmt (at least formats)
 		cmd = exec.Command("go", "fmt", filePath)
 		return cmd.Run()
 	}
 	return nil
 }
 
-// findModuleRoot ищет ближайший go.mod вверх от директории.
-// Возвращает директорию с go.mod или пустую строку.
+// findModuleRoot finds the nearest go.mod upward from the directory.
+// Returns the directory containing go.mod or an empty string.
 func findModuleRoot(dir string) string {
 	current := dir
 	for {
@@ -82,27 +82,27 @@ func findModuleRoot(dir string) string {
 	return ""
 }
 
-// Validate проверяет сгенерированный тест-файл.
-// repoDir — путь к репозиторию, testFile — путь к файлу тестов.
+// Validate checks a generated test file.
+// repoDir is the repository path, testFile is the test file path.
 func Validate(repoDir string, testFile string) *Result {
 	result := &Result{}
 	start := time.Now()
 
-	// Шаг 0: Автоформатирование (goimports фиксит импорты автоматически)
+	// Step 0: Auto-format (goimports fixes imports automatically)
 	_ = FormatFile(testFile)
 
-	// Определяем директорию тест-файла
+	// Determine the test file directory
 	testDir := filepath.Dir(testFile)
 
-	// Ищем корень Go-модуля для этого тест-файла.
-	// Если testdata/sample-project имеет свой go.mod — используем его,
-	// а не go.mod основного проекта.
+	// Find the Go module root for this test file.
+	// If testdata/sample-project has its own go.mod, use that
+	// instead of the main project's go.mod.
 	moduleRoot := findModuleRoot(testDir)
 	if moduleRoot == "" {
 		moduleRoot = repoDir
 	}
 
-	// Шаг 1: Проверяем компиляцию
+	// Step 1: Check compilation
 	compileErr := runGoCommand(moduleRoot, testDir, "build")
 	if compileErr != "" {
 		result.CompileOK = false
@@ -112,7 +112,7 @@ func Validate(repoDir string, testFile string) *Result {
 	}
 	result.CompileOK = true
 
-	// Шаг 2: Запускаем тесты
+	// Step 2: Run tests
 	testOutput, testErr := runGoTest(moduleRoot, testDir)
 	result.TestOutput = testOutput
 	result.Duration = time.Since(start)
@@ -123,7 +123,7 @@ func Validate(repoDir string, testFile string) *Result {
 		return result
 	}
 
-	// Разбираем результаты упавших тестов
+	// Parse failing test results
 	result.TestsOK = false
 	result.TestError = testErr
 	result.Passed = countTests(testOutput, "PASS")
@@ -132,8 +132,8 @@ func Validate(repoDir string, testFile string) *Result {
 	return result
 }
 
-// ValidateWithRace проверяет тест-файл с включённым детектором гонок данных.
-// Вызывает go test -race -v.
+// ValidateWithRace checks a test file with the data race detector enabled.
+// Runs go test -race -v.
 func ValidateWithRace(repoDir string, testFile string) *Result {
 	result := &Result{}
 	start := time.Now()
@@ -181,7 +181,7 @@ func ValidateWithRace(repoDir string, testFile string) *Result {
 	return result
 }
 
-// runGoTestRace запускает go test -race и возвращает вывод.
+// runGoTestRace runs go test -race and returns the output.
 func runGoTestRace(moduleRoot, pkgDir string) (output string, errMsg string) {
 	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
@@ -204,7 +204,7 @@ func runGoTestRace(moduleRoot, pkgDir string) (output string, errMsg string) {
 	return outputStr, ""
 }
 
-// extractRaceDetails извлекает информацию о data race из вывода go test -race.
+// extractRaceDetails extracts data race information from go test -race output.
 func extractRaceDetails(output string) string {
 	var details []string
 	lines := strings.Split(output, "\n")
@@ -231,14 +231,14 @@ func extractRaceDetails(output string) string {
 	return strings.Join(details, "\n")
 }
 
-// runGoCommand запускает go <command> в указанной директории.
+// runGoCommand runs go <command> in the specified directory.
 func runGoCommand(moduleRoot, pkgDir, command string) string {
-	// Определяем относительный путь пакета от корня модуля
+	// Determine relative package path from module root
 	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
 		relPkg = "."
 	}
-	// Преобразуем к формату Go-пакета: ./path/to/pkg
+	// Convert to Go package format: ./path/to/pkg
 	pkgPath := "./" + filepath.ToSlash(relPkg)
 	if pkgPath == "./" {
 		pkgPath = "."
@@ -254,7 +254,7 @@ func runGoCommand(moduleRoot, pkgDir, command string) string {
 	return ""
 }
 
-// runGoTest запускает go test и возвращает вывод и ошибку.
+// runGoTest runs go test and returns output and error.
 func runGoTest(moduleRoot, pkgDir string) (output string, errMsg string) {
 	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
@@ -277,39 +277,39 @@ func runGoTest(moduleRoot, pkgDir string) (output string, errMsg string) {
 	return outputStr, ""
 }
 
-// extractTestErrors извлекает сообщения об ошибках из вывода go test.
+// extractTestErrors extracts error messages from go test output.
 func extractTestErrors(output string) string {
 	var errors []string
 	lines := strings.Split(output, "\n")
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Ошибки компиляции
+		// Compilation errors
 		if strings.Contains(trimmed, ": ") && (strings.Contains(trimmed, ".go:") || strings.Contains(trimmed, "cannot") || strings.Contains(trimmed, "undefined")) {
 			errors = append(errors, trimmed)
 		}
-		// Упавшие тесты
+		// Failing tests
 		if strings.HasPrefix(trimmed, "--- FAIL:") {
 			errors = append(errors, trimmed)
 		}
-		// t.Errorf / t.Fatalf вывод
+		// t.Errorf / t.Fatalf output
 		if strings.Contains(trimmed, "Error Trace:") || strings.Contains(trimmed, "Error:") {
 			errors = append(errors, trimmed)
 		}
-		// Прямые ошибки тестов
+		// Direct test errors
 		if strings.HasPrefix(trimmed, "FAIL") {
 			errors = append(errors, trimmed)
 		}
 	}
 
 	if len(errors) == 0 {
-		return output // Возвращаем весь вывод если не смогли распарсить
+		return output // Return full output if we couldn't parse it
 	}
 
 	return strings.Join(errors, "\n")
 }
 
-// countTests подсчитывает количество тестов с данным статусом в выводе go test -v.
+// countTests counts the number of tests with the given status in go test -v output.
 func countTests(output, status string) int {
 	count := 0
 	prefix := "--- " + status + ":"

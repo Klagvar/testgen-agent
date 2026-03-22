@@ -1,7 +1,7 @@
-# CI/CD workflow для testgen-agent.
-# Запускается на self-hosted runner (Windows) с локальной Ollama.
+# CI/CD workflow for testgen-agent.
+# Runs on a self-hosted runner (Windows) with local Ollama.
 #
-# Триггер: PR в main, изменения в .go файлах (кроме _test.go).
+# Trigger: PR to main, changes in .go files (excluding _test.go).
 
 name: Testgen — AI Test Generation
 
@@ -49,9 +49,9 @@ jobs:
         run: |
           try {
             $response = Invoke-RestMethod -Uri "http://localhost:11434/v1/models" -Method Get
-            Write-Host "✅ Ollama доступна. Модели: $($response.data.id -join ', ')"
+            Write-Host "✅ Ollama is available. Models: $($response.data.id -join ', ')"
           } catch {
-            Write-Host "⚠️ Ollama не запущена!"
+            Write-Host "⚠️ Ollama is not running!"
           }
 
       - name: Run testgen-agent
@@ -88,17 +88,17 @@ jobs:
 
           $staged = git diff --cached --quiet 2>&1
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "ℹ️ Нет новых тестов для коммита"
+            Write-Host "ℹ️ No new tests to commit"
           } else {
             git commit -m "🤖 testgen-agent: auto-generated tests"
             git push
-            Write-Host "✅ Тесты закоммичены и запушены"
+            Write-Host "✅ Tests committed and pushed"
           }
 
       - name: Report failure
         if: failure()
         shell: pwsh
         run: |
-          Write-Host "⚠️ Генерация тестов завершилась с ошибками."
-          Write-Host "Проверьте логи шага 'Run testgen-agent' для деталей."
-          Write-Host "Невалидные тесты НЕ были закоммичены."
+          Write-Host "⚠️ Test generation finished with errors."
+          Write-Host "Check the 'Run testgen-agent' step logs for details."
+          Write-Host "Invalid tests were NOT committed."

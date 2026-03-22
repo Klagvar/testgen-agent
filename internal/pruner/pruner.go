@@ -1,12 +1,12 @@
-// Package pruner анализирует вывод go test и удаляет
-// падающие тесты из сгенерированного файла.
+// Package pruner analyzes go test output and removes
+// failing tests from the generated file.
 //
-// Стратегия:
-// 1. Парсим вывод go test → определяем имена падающих тестов
-// 2. Для table-driven тестов: определяем падающие sub-test имена
-// 3. AST: удаляем падающие тест-функции целиком или отдельные
-//    записи из test-table, если можно сохранить проходящие кейсы
-// 4. Переформатируем и возвращаем очищенный код
+// Strategy:
+// 1. Parse go test output → determine failing test names
+// 2. For table-driven tests: determine failing sub-test names
+// 3. AST: remove failing test functions entirely or individual
+//    entries from the test table if passing cases can be preserved
+// 4. Reformat and return the cleaned code
 package pruner
 
 import (
@@ -19,18 +19,18 @@ import (
 	"strings"
 )
 
-// TestResult — результат одного теста.
+// TestResult holds the result of a single test.
 type TestResult struct {
-	Name   string // полное имя: TestFoo или TestFoo/sub_case
+	Name   string // full name: TestFoo or TestFoo/sub_case
 	Passed bool
 }
 
-// ParseTestOutput парсит вывод go test -v и возвращает результаты
-// для каждого теста (включая sub-tests).
+// ParseTestOutput parses go test -v output and returns results
+// for each test (including sub-tests).
 func ParseTestOutput(output string) []TestResult {
 	var results []TestResult
 
-	// Паттерны вывода go test -v:
+	// go test -v output patterns:
 	// --- PASS: TestFoo (0.00s)
 	// --- FAIL: TestFoo/sub_case (0.00s)
 	passRe := regexp.MustCompile(`--- PASS: (\S+)\s`)
@@ -47,8 +47,8 @@ func ParseTestOutput(output string) []TestResult {
 	return results
 }
 
-// FailingTopLevel возвращает имена верхнеуровневых тест-функций,
-// у которых хотя бы один sub-test упал.
+// FailingTopLevel returns the names of top-level test functions
+// that have at least one failing sub-test.
 func FailingTopLevel(results []TestResult) []string {
 	failing := make(map[string]bool)
 
@@ -68,7 +68,7 @@ func FailingTopLevel(results []TestResult) []string {
 	return names
 }
 
-// FailingSubTests возвращает мапу: TestFuncName → []failingSubTestNames.
+// FailingSubTests returns a map: TestFuncName → []failingSubTestNames.
 func FailingSubTests(results []TestResult) map[string][]string {
 	failing := make(map[string][]string)
 
@@ -78,7 +78,7 @@ func FailingSubTests(results []TestResult) map[string][]string {
 		}
 		parts := strings.SplitN(r.Name, "/", 2)
 		if len(parts) != 2 {
-			continue // это top-level fail, не sub-test
+			continue // top-level fail, not a sub-test
 		}
 		topLevel := parts[0]
 		subTest := parts[1]
@@ -88,7 +88,7 @@ func FailingSubTests(results []TestResult) map[string][]string {
 	return failing
 }
 
-// AllSubTestsFailing проверяет, все ли sub-tests данного top-level теста упали.
+// AllSubTestsFailing checks whether all sub-tests of the given top-level test failed.
 func AllSubTestsFailing(results []TestResult, topLevelName string) bool {
 	totalSubs := 0
 	failedSubs := 0
@@ -104,7 +104,7 @@ func AllSubTestsFailing(results []TestResult, topLevelName string) bool {
 		}
 	}
 
-	// Если нет sub-tests, значит top-level тест упал сам
+	// If no sub-tests, the top-level test itself failed
 	if totalSubs == 0 {
 		return true
 	}
@@ -112,20 +112,20 @@ func AllSubTestsFailing(results []TestResult, topLevelName string) bool {
 	return totalSubs == failedSubs
 }
 
-// PruneResult — результат прунинга.
+// PruneResult holds the pruning result.
 type PruneResult struct {
-	Code            string   // очищенный код
-	RemovedFuncs    []string // удалённые тест-функции
-	RemovedSubTests int      // удалённые sub-test кейсы из table-driven тестов
-	KeptTests       int      // сколько тестов осталось
+	Code            string   // cleaned code
+	RemovedFuncs    []string // removed test functions
+	RemovedSubTests int      // removed sub-test cases from table-driven tests
+	KeptTests       int      // number of remaining tests
 }
 
-// Prune удаляет падающие тесты из сгенерированного кода.
-// Стратегия:
-// - Если все sub-tests в тест-функции упали → удалить всю функцию
-// - Если только часть sub-tests упала → попробовать удалить
-//   конкретные записи из table-driven теста (композитных литералов)
-// - Если это не table-driven тест → удалить всю функцию
+// Prune removes failing tests from generated code.
+// Strategy:
+// - If all sub-tests in a test function failed → remove the entire function
+// - If only some sub-tests failed → try to remove
+//   specific entries from the table-driven test (composite literals)
+// - If it's not a table-driven test → remove the entire function
 func Prune(source string, testOutput string) (*PruneResult, error) {
 	results := ParseTestOutput(testOutput)
 
@@ -133,15 +133,15 @@ func Prune(source string, testOutput string) (*PruneResult, error) {
 		return nil, fmt.Errorf("no test results found in output")
 	}
 
-	// Проверяем, есть ли вообще падающие тесты
+	// Check if there are any failing tests
 	failingTop := FailingTopLevel(results)
 	if len(failingTop) == 0 {
-		return &PruneResult{Code: source}, nil // всё ок
+		return &PruneResult{Code: source}, nil // all OK
 	}
 
 	failingSubs := FailingSubTests(results)
 
-	// Парсим AST
+	// Parse AST
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, "test.go", source, parser.ParseComments)
 	if err != nil {
@@ -152,35 +152,35 @@ func Prune(source string, testOutput string) (*PruneResult, error) {
 	var declsToRemove []*ast.FuncDecl
 
 	for _, topName := range failingTop {
-		// Находим функцию в AST
+		// Find function in AST
 		funcDecl := findFunc(node, topName)
 		if funcDecl == nil {
 			continue
 		}
 
 		if AllSubTestsFailing(results, topName) {
-			// Все sub-tests упали → удаляем всю функцию
+			// All sub-tests failed → remove entire function
 			declsToRemove = append(declsToRemove, funcDecl)
 			result.RemovedFuncs = append(result.RemovedFuncs, topName)
 			continue
 		}
 
-		// Часть sub-tests упала → пробуем удалить из table
+		// Some sub-tests failed → try to remove from table
 		subs := failingSubs[topName]
 		removed := removeTableCases(fset, funcDecl, subs)
 		result.RemovedSubTests += removed
 
 		if removed == 0 {
-			// Не удалось удалить отдельные кейсы → удаляем всю функцию
+			// Could not remove individual cases → remove entire function
 			declsToRemove = append(declsToRemove, funcDecl)
 			result.RemovedFuncs = append(result.RemovedFuncs, topName)
 		}
 	}
 
-	// Удаляем помеченные функции из AST
+	// Remove marked functions from AST
 	removeFuncs(node, declsToRemove)
 
-	// Считаем оставшиеся тесты
+	// Count remaining tests
 	for _, decl := range node.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
 			if strings.HasPrefix(fn.Name.Name, "Test") {
@@ -189,7 +189,7 @@ func Prune(source string, testOutput string) (*PruneResult, error) {
 		}
 	}
 
-	// Форматируем результат
+	// Format result
 	var buf strings.Builder
 	if err := format.Node(&buf, fset, node); err != nil {
 		return nil, fmt.Errorf("format pruned code: %w", err)
@@ -199,7 +199,7 @@ func Prune(source string, testOutput string) (*PruneResult, error) {
 	return result, nil
 }
 
-// findFunc ищет функцию по имени в AST.
+// findFunc finds a function by name in the AST.
 func findFunc(node *ast.File, name string) *ast.FuncDecl {
 	for _, decl := range node.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -213,7 +213,7 @@ func findFunc(node *ast.File, name string) *ast.FuncDecl {
 	return nil
 }
 
-// removeFuncs удаляет функции из Decls.
+// removeFuncs removes functions from Decls.
 func removeFuncs(node *ast.File, toRemove []*ast.FuncDecl) {
 	removeSet := make(map[*ast.FuncDecl]bool)
 	for _, fn := range toRemove {
@@ -231,11 +231,11 @@ func removeFuncs(node *ast.File, toRemove []*ast.FuncDecl) {
 	node.Decls = filtered
 }
 
-// removeTableCases пытается удалить конкретные sub-test кейсы
-// из table-driven теста. Ищет массив/слайс с composite literals,
-// у которых есть поле "name" совпадающее с именем падающего sub-test.
+// removeTableCases attempts to remove specific sub-test cases
+// from a table-driven test. Looks for an array/slice with composite literals
+// that have a "name" field matching the failing sub-test name.
 //
-// Возвращает количество удалённых кейсов.
+// Returns the number of removed cases.
 func removeTableCases(fset *token.FileSet, funcDecl *ast.FuncDecl, failingSubs []string) int {
 	if funcDecl.Body == nil {
 		return 0
@@ -244,7 +244,7 @@ func removeTableCases(fset *token.FileSet, funcDecl *ast.FuncDecl, failingSubs [
 	failingSet := make(map[string]bool)
 	for _, name := range failingSubs {
 		failingSet[name] = true
-		// Также нормализуем: go test заменяет пробелы на _
+		// Also normalize: go test replaces spaces with _
 		failingSet[strings.ReplaceAll(name, "_", " ")] = true
 	}
 
@@ -256,13 +256,13 @@ func removeTableCases(fset *token.FileSet, funcDecl *ast.FuncDecl, failingSubs [
 			return true
 		}
 
-		// Ищем слайс composite literals (test table)
-		// Проверяем, что это []struct{...}{...} или tests := []struct{...}{...}
+		// Look for a slice of composite literals (test table)
+		// Check for []struct{...}{...} or tests := []struct{...}{...}
 		if len(compLit.Elts) == 0 {
 			return true
 		}
 
-		// Проверяем, что элементы — composite literals с полем "name"
+		// Check that elements are composite literals with a "name" field
 		var filteredElts []ast.Expr
 		for _, elt := range compLit.Elts {
 			innerLit, ok := elt.(*ast.CompositeLit)
@@ -277,12 +277,12 @@ func removeTableCases(fset *token.FileSet, funcDecl *ast.FuncDecl, failingSubs [
 				continue
 			}
 
-			// Нормализуем: go test заменяет пробелы на _
+			// Normalize: go test replaces spaces with _
 			normalizedName := strings.ReplaceAll(caseName, " ", "_")
 
 			if failingSet[caseName] || failingSet[normalizedName] {
 				removed++
-				continue // пропускаем этот кейс
+				continue // skip this case
 			}
 
 			filteredElts = append(filteredElts, elt)
@@ -298,8 +298,8 @@ func removeTableCases(fset *token.FileSet, funcDecl *ast.FuncDecl, failingSubs [
 	return removed
 }
 
-// extractTestCaseName извлекает имя тест-кейса из composite literal.
-// Ищет поле "name" или "Name" типа string.
+// extractTestCaseName extracts the test case name from a composite literal.
+// Looks for a "name" or "Name" field of type string.
 func extractTestCaseName(lit *ast.CompositeLit) string {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
@@ -325,7 +325,7 @@ func extractTestCaseName(lit *ast.CompositeLit) string {
 			continue
 		}
 
-		// Убираем кавычки
+		// Remove quotes
 		name := strings.Trim(basicLit.Value, "\"`")
 		return name
 	}
