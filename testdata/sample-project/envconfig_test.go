@@ -297,3 +297,74 @@ func TestTimeSince_ExactDay(t *testing.T) {
 		t.Errorf("TimeSince() = %v, want \"1 days ago\"", result)
 	}
 }
+
+func TestLoadConfig_EnvVarOverrides(t *testing.T) {
+	t.Setenv("APP_HOST", "example.com")
+	t.Setenv("APP_PORT", "9090")
+	t.Setenv("APP_DEBUG", "true")
+	t.Setenv("APP_TIMEOUT", "60s")
+
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	expected := &AppConfig{
+		Host:    "example.com",
+		Port:    9090,
+		Debug:   true,
+		Timeout: 60 * time.Second,
+	}
+
+	if config.Host != expected.Host {
+		t.Errorf("Host = %v, want %v", config.Host, expected.Host)
+	}
+	if config.Port != expected.Port {
+		t.Errorf("Port = %v, want %v", config.Port, expected.Port)
+	}
+	if config.Debug != expected.Debug {
+		t.Errorf("Debug = %v, want %v", config.Debug, expected.Debug)
+	}
+	if config.Timeout != expected.Timeout {
+		t.Errorf("Timeout = %v, want %v", config.Timeout, expected.Timeout)
+	}
+}
+
+func TestLoadConfig_InvalidTimeoutFormat(t *testing.T) {
+	t.Setenv("APP_TIMEOUT", "not-a-duration")
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Error("LoadConfig() expected error for invalid APP_TIMEOUT, got nil")
+	}
+}
+
+func TestFetchWithTimeout_InvalidKey(t *testing.T) {
+	_, err := FetchWithTimeout(context.Background(), "")
+	if err == nil {
+		t.Error("FetchWithTimeout() expected error for empty key, got nil")
+	}
+}
+
+func TestFetchWithTimeout_InvalidKey_Concurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := FetchWithTimeout(context.Background(), "")
+			if err == nil {
+				t.Error("FetchWithTimeout() expected error for empty key, got nil")
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestTimeSince_MaxDuration(t *testing.T) {
+	now := time.Now()
+	result := TimeSince(now.Add(-time.Hour * 24 * 365))
+	if result != "365 days ago" {
+		t.Errorf("TimeSince() with one year ago = %v, want %v", result, "365 days ago")
+	}
+}

@@ -3,6 +3,7 @@ package sample
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +123,61 @@ func TestWriteError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected status %d, got %d", http.StatusInternalServerError, rec.Code)
+	}
+}
+
+func TestCalcHandler_Get(t *testing.T) {
+	tests := []struct {
+		name           string
+		query          string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "missing parameters",
+			query:          "",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `{"status":"error","message":"invalid parameter 'a'"}`,
+		},
+		{
+			name:           "valid add operation",
+			query:          "?a=5&b=3&op=add",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `{"status":"ok","data":8}`,
+		},
+		{
+			name:           "valid sub operation",
+			query:          "?a=10&b=4&op=sub",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `{"status":"ok","data":6}`,
+		},
+		{
+			name:           "valid mul operation",
+			query:          "?a=6&b=7&op=mul",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `{"status":"ok","data":42}`,
+		},
+		{
+			name:           "valid div operation",
+			query:          "?a=15&b=3&op=div",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `{"status":"ok","data":5}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/calc"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			CalcHandler(rec, req)
+
+			if rec.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, rec.Code)
+			}
+
+			if tt.expectedBody != "" && !strings.Contains(rec.Body.String(), tt.expectedBody) {
+				t.Errorf("expected body containing %s, got %s", tt.expectedBody, rec.Body.String())
+			}
+		})
 	}
 }

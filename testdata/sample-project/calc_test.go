@@ -174,3 +174,35 @@ func TestFibonacci(t *testing.T) {
 		})
 	}
 }
+
+func TestLCM_ZeroInput(t *testing.T) {
+	tests := []struct {
+		a, b int
+	}{
+		{0, 5},
+		{5, 0},
+		{0, 0},
+	}
+
+	for _, test := range tests {
+		result, err := LCM(test.a, test.b)
+		if err == nil {
+			t.Errorf("LCM(%d, %d) should return error for zero input, got result: %d", test.a, test.b, result)
+		}
+		expectedErr := errors.New("LCM undefined for zero")
+		if err.Error() != expectedErr.Error() {
+			t.Errorf("LCM(%d, %d) returned unexpected error: got %v, want %v", test.a, test.b, err, expectedErr)
+		}
+	}
+}
+
+func TestFibonacci_NegativeInput(t *testing.T) {
+	result, err := Fibonacci(-1)
+	if err == nil {
+		t.Errorf("Fibonacci(-1) should return error for negative input, got result: %d", result)
+	}
+	expectedErr := errors.New("negative index")
+	if err.Error() != expectedErr.Error() {
+		t.Errorf("Fibonacci(-1) returned unexpected error: got %v, want %v", err, expectedErr)
+	}
+}

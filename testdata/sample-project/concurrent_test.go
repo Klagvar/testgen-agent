@@ -222,3 +222,40 @@ func TestParallelSumConcurrent(t *testing.T) {
 		t.Errorf("ParallelSum() = %d, want %d", result, expected)
 	}
 }
+
+func TestParallelSum_Concurrent(t *testing.T) {
+	nums := make([]int, 1000)
+	for i := range nums {
+		nums[i] = i + 1
+	}
+
+	result := ParallelSum(nums, 10)
+	expected := int64(500500)
+	if result != expected {
+		t.Errorf("Expected sum to be %d, got %d", expected, result)
+	}
+}
+
+func TestFanOut_Concurrent(t *testing.T) {
+	results := make([]int, 100)
+
+	fn := func(i int) int {
+		return i * 2
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(100)
+	for i := 0; i < 100; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = fn(idx)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, expected := range []int{0, 2, 4, 6, 8, 10, 12, 14, 16, 18} {
+		if results[i] != expected {
+			t.Errorf("Expected results[%d] to be %d, got %d", i, expected, results[i])
+		}
+	}
+}
