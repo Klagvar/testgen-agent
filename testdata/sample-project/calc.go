@@ -97,3 +97,28 @@ func GCD(a, b int) int {
 	}
 	return a
 }
+
+// LCM computes the least common multiple of two numbers.
+func LCM(a, b int) (int, error) {
+	if a == 0 || b == 0 {
+		return 0, errors.New("LCM undefined for zero")
+	}
+	g := GCD(a, b)
+	return (a / g) * b, nil
+}
+
+// Fibonacci returns the n-th Fibonacci number.
+// Returns an error if n is negative.
+func Fibonacci(n int) (int, error) {
+	if n < 0 {
+		return 0, errors.New("negative index")
+	}
+	if n <= 1 {
+		return n, nil
+	}
+	a, b := 0, 1
+	for i := 2; i <= n; i++ {
+		a, b = b, a+b
+	}
+	return b, nil
+}
