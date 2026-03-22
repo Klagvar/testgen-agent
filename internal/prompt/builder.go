@@ -109,6 +109,7 @@ type TestGenRequest struct {
 	ExistingTestNames []string                    // existing test function names (to avoid duplication)
 	UsedTypes        []analyzer.TypeInfo          // package types used by functions
 	CalledFuncs      []analyzer.FuncInfo          // called functions from the package (cross-file)
+	PackageVars      []analyzer.VarInfo           // package-level vars/consts (to avoid redeclaration)
 	CustomPrompt     string                       // additional instructions from .testgen.yml
 	ConcurrencyInfos map[string]analyzer.ConcurrencyInfo // funcName → concurrency info
 	RaceDetection    bool                         // run with -race flag
@@ -157,6 +158,22 @@ Always trace the exact code path for each test input.
   For backslashes use: "\\" or raw strings.
 - Do NOT use filepath.Join with hardcoded OS-specific paths.
 - When testing functions using os/exec, remember that commands are platform-dependent.
+
+## CRITICAL: Same-Package Awareness
+
+- All .go files in the SAME package share the same namespace. Variables, constants, types,
+  and functions declared in OTHER files of the package are ALREADY accessible — do NOT redeclare them.
+- If you see package-level vars like ErrNotFound, ErrValidation — they already exist. Just USE them.
+- Do NOT create var blocks that duplicate existing package-level declarations.
+
+## Go-Specific Pitfalls
+
+- map iteration order in Go is NOT deterministic. When testing functions that iterate over maps,
+  do NOT assert a specific key order. Instead, parse the output or compare unordered (e.g., check
+  that all key=value pairs are present regardless of order).
+- json.Marshal with struct tag "omitempty" OMITS zero-value fields (empty string "", 0, false, nil).
+  Example: json:"email,omitempty" — if Email is "", it will NOT appear in the JSON output.
+  Do NOT expect {"email":""} when omitempty is set and the value is empty.
 
 ## CRITICAL: Output Only NEW Tests
 
@@ -262,6 +279,22 @@ func BuildUserPrompt(req TestGenRequest) string {
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
+	}
+
+	// Package-level variables and constants (to prevent redeclaration)
+	if len(req.PackageVars) > 0 {
+		sb.WriteString("## Package-Level Variables & Constants (ALREADY DECLARED — do NOT redeclare)\n\n")
+		sb.WriteString("These are defined in other files of the same package and are accessible in tests:\n\n")
+		for _, v := range req.PackageVars {
+			if v.Value != "" {
+				sb.WriteString(fmt.Sprintf("- `%s`\n", v.Value))
+			} else if v.IsConst {
+				sb.WriteString(fmt.Sprintf("- `const %s`\n", v.Name))
+			} else {
+				sb.WriteString(fmt.Sprintf("- `var %s`\n", v.Name))
+			}
+		}
+		sb.WriteString("\n⚠️ Do NOT redeclare these in your test file. Just use them directly.\n\n")
 	}
 
 	// Functions to test

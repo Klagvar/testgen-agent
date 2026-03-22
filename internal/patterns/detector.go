@@ -397,10 +397,12 @@ func detectJSON(fn analyzer.FuncInfo, imports []string) *PatternHint {
 		Guide: `This function uses JSON encoding or decoding (json.Marshal/Unmarshal/NewEncoder/NewDecoder).
 In tests:
 - Test with valid and invalid JSON input
-- Check struct tags are respected (field names, omitempty)
+- CAREFULLY read struct tags: json:"name,omitempty" means the field is OMITTED when zero-value.
+  For example, if Email has tag json:"email,omitempty" and Email == "", the JSON output will NOT contain "email" at all.
+  Do NOT expect {"email":""} — it will be absent from output.
 - Test boundary values: nil, empty struct, nested objects
 - For Unmarshal: test malformed JSON, missing fields, extra fields
-- For Marshal: verify the output matches expected JSON structure`,
+- For Marshal: verify output matches expected JSON by tracing omitempty behavior for each field`,
 	}
 }
 
