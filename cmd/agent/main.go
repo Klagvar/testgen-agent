@@ -356,9 +356,9 @@ func runCoverageLoop(
 			return lastCoverage
 		}
 
-		// Calculate diff coverage
+		// Calculate diff coverage (filter non-executable lines: imports, blanks, comments)
 		sourceFile := filepath.Base(sourceFilePath)
-		dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks)
+		dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks, sourceFilePath)
 		lastCoverage = dcResult.Coverage
 
 		fmt.Printf("     📈 Diff coverage: %.1f%% (%d/%d changed lines covered)\n",
@@ -469,7 +469,7 @@ func runCoverageLoop(
 	}
 
 	sourceFile := filepath.Base(sourceFilePath)
-	dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks)
+	dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks, sourceFilePath)
 	lastCoverage = dcResult.Coverage
 	fmt.Printf("     📈 Final diff coverage: %.1f%% (%d/%d lines)\n",
 		dcResult.Coverage, len(dcResult.CoveredLines), len(dcResult.ChangedLines))

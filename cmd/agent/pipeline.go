@@ -459,7 +459,9 @@ func runGenerationLoop(
 			if useRace && hasConcurrentFuncs {
 				fmt.Printf("     🏁 Running race detector...\n")
 				raceResult := validator.ValidateWithRace(opts.RepoPath, testFilePath)
-				if raceResult.HasRaces {
+				if raceResult.TestError != "" && strings.Contains(raceResult.TestError, "race detector unavailable") {
+					fmt.Printf("     ℹ️  Race detector skipped (CGO disabled)\n")
+				} else if raceResult.HasRaces {
 					fmt.Printf("     ⚠️  DATA RACE detected:\n%s\n", raceResult.RaceDetails)
 				} else if raceResult.IsValid() {
 					fmt.Printf("     ✅ Race detector: no races found\n")

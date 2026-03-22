@@ -134,8 +134,17 @@ Your task is to generate high-quality unit tests for the provided Go functions.
 5. **Assertions**: Use t.Errorf / t.Fatalf for checks. Do NOT use external assertion libraries (e.g. testify).
 6. **Output format**: Return ONLY Go code — ready to compile.
 
+## CRITICAL: Test ACTUAL Behavior, Not Assumptions
+
+You MUST determine expected values by mentally tracing through the implementation code provided.
+Do NOT guess expected values based on the function name or what you think the function "should" do.
+If a function named "IsPalindrome" only does strings.ToLower but does NOT strip spaces or punctuation,
+then IsPalindrome("a b a") must return false (because 'a' != 'a' with spaces in between in the rune comparison).
+Always trace the exact code path for each test input.
+
 ## Common Mistakes (AVOID THESE)
 
+- WRONG expected values are the #1 cause of test failures. Always trace the code mentally.
 - Do NOT use compile-time overflow expressions like math.MaxInt64+1 or -math.MinInt64.
   For overflow tests, use variables: a := math.MaxInt64, then pass them to the function.
 - Do NOT import unused packages — Go will not compile.
@@ -514,8 +523,10 @@ func buildCoverageGapPrompt(req CoverageGapRequest) string {
 	sb.WriteString("1. Analyze which execution paths lead to the uncovered lines.\n")
 	sb.WriteString("2. Write NEW test cases that exercise those specific paths.\n")
 	sb.WriteString("3. Focus on edge cases, error conditions, and boundary values that weren't tested.\n")
-	sb.WriteString("4. Return ONLY new test functions (valid Go file: package + imports + new test functions).\n")
-	sb.WriteString("5. Return ONLY code — no explanations, no markdown wrappers.\n")
+	sb.WriteString("4. Determine expected values by tracing the ACTUAL implementation — do NOT guess.\n")
+	sb.WriteString("5. Every variable you declare MUST be used. Do NOT declare unused variables.\n")
+	sb.WriteString("6. Return ONLY new test functions (valid Go file: package + imports + new test functions).\n")
+	sb.WriteString("7. Return ONLY code — no explanations, no markdown wrappers.\n")
 
 	return sb.String()
 }
