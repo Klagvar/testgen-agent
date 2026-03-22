@@ -57,12 +57,21 @@ type MethodInfo struct {
 	Signature string // (params) returns
 }
 
+// VarInfo holds information about a package-level var or const.
+type VarInfo struct {
+	Name  string // variable/constant name
+	Type  string // type (if explicitly typed)
+	Value string // initializer expression (short form)
+	IsConst bool
+}
+
 // FileAnalysis holds the analysis result for a single Go file.
 type FileAnalysis struct {
 	Package   string      // package name
 	Imports   []string    // import list
 	Functions []FuncInfo  // all functions in the file
 	Types     []TypeInfo  // type declarations (struct, interface, alias)
+	Vars      []VarInfo   // package-level var/const declarations
 	FilePath  string      // file path
 }
 
@@ -72,6 +81,7 @@ type PackageAnalysis struct {
 	Files     []*FileAnalysis   // analysis of each file
 	AllTypes  []TypeInfo        // all types from all package files
 	AllFuncs  []FuncInfo        // all functions from all package files
+	AllVars   []VarInfo         // all package-level vars/consts
 	FuncIndex map[string]FuncInfo // name → FuncInfo (for quick lookup)
 }
 
@@ -123,6 +133,37 @@ func AnalyzeSource(filename, src string) (*FileAnalysis, error) {
 		}
 	}
 
+	// Extract package-level vars and consts
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		if genDecl.Tok != token.VAR && genDecl.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range vs.Names {
+				vi := VarInfo{
+					Name:    name.Name,
+					IsConst: genDecl.Tok == token.CONST,
+				}
+				if vs.Type != nil {
+					vi.Type = exprToString(vs.Type)
+				}
+				startLine := fset.Position(vs.Pos()).Line
+				if startLine >= 1 && startLine <= len(lines) {
+					vi.Value = strings.TrimSpace(lines[startLine-1])
+				}
+				analysis.Vars = append(analysis.Vars, vi)
+			}
+		}
+	}
+
 	// Extract functions
 	for _, decl := range file.Decls {
 		funcDecl, ok := decl.(*ast.FuncDecl)
@@ -171,6 +212,7 @@ func AnalyzePackage(dir string) (*PackageAnalysis, error) {
 
 		pkg.Files = append(pkg.Files, analysis)
 		pkg.AllTypes = append(pkg.AllTypes, analysis.Types...)
+		pkg.AllVars = append(pkg.AllVars, analysis.Vars...)
 
 		for _, fn := range analysis.Functions {
 			pkg.AllFuncs = append(pkg.AllFuncs, fn)

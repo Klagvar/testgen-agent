@@ -182,6 +182,11 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		}
 	}
 
+	var pkgVars []analyzer.VarInfo
+	if pkgErr == nil && pkgAnalysis != nil {
+		pkgVars = pkgAnalysis.AllVars
+	}
+
 	req := prompt.TestGenRequest{
 		PackageName:       analysis.Package,
 		FilePath:          f.NewPath,
@@ -191,6 +196,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		ExistingTestNames: existingTestNames,
 		UsedTypes:         usedTypes,
 		CalledFuncs:       calledFuncs,
+		PackageVars:       pkgVars,
 		CustomPrompt:      opts.ProjectCfg.CustomPrompt,
 		ConcurrencyInfos:  concInfos,
 		RaceDetection:     useRace,
