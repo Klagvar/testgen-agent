@@ -491,3 +491,183 @@ func findFunc(funcs []FuncInfo, name string) *FuncInfo {
 	}
 	return nil
 }
+
+const genericsCode = `package generic
+
+type Set[T comparable] struct {
+	items map[T]struct{}
+}
+
+func Map[T, U any](items []T, fn func(T) U) []U {
+	result := make([]U, len(items))
+	for i, item := range items {
+		result[i] = fn(item)
+	}
+	return result
+}
+
+func Filter[T any](items []T, predicate func(T) bool) []T {
+	var result []T
+	for _, item := range items {
+		if predicate(item) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func (s *Set[T]) Add(item T) {
+	s.items[item] = struct{}{}
+}
+
+func NewSet[T comparable]() *Set[T] {
+	return &Set[T]{items: make(map[T]struct{})}
+}
+`
+
+func TestAnalyzeSource_Generics_Functions(t *testing.T) {
+	a, err := AnalyzeSource("generic.go", genericsCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	mapFn := findFunc(a.Functions, "Map")
+	if mapFn == nil {
+		t.Fatal("Map function not found")
+	}
+	if mapFn.TypeParams != "[T any, U any]" {
+		t.Errorf("Map type params: got %q, want %q", mapFn.TypeParams, "[T any, U any]")
+	}
+	expected := "func Map[T any, U any](items []T, fn func(T) U) []U"
+	if mapFn.Signature != expected {
+		t.Errorf("Map signature:\n  got  %q\n  want %q", mapFn.Signature, expected)
+	}
+
+	filterFn := findFunc(a.Functions, "Filter")
+	if filterFn == nil {
+		t.Fatal("Filter function not found")
+	}
+	if filterFn.TypeParams != "[T any]" {
+		t.Errorf("Filter type params: got %q, want %q", filterFn.TypeParams, "[T any]")
+	}
+}
+
+func TestAnalyzeSource_Generics_Types(t *testing.T) {
+	a, err := AnalyzeSource("generic.go", genericsCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var setType *TypeInfo
+	for i := range a.Types {
+		if a.Types[i].Name == "Set" {
+			setType = &a.Types[i]
+			break
+		}
+	}
+	if setType == nil {
+		t.Fatal("Set type not found")
+	}
+	if setType.TypeParams != "[T comparable]" {
+		t.Errorf("Set type params: got %q, want %q", setType.TypeParams, "[T comparable]")
+	}
+	if setType.Kind != "struct" {
+		t.Errorf("Set kind: got %q, want struct", setType.Kind)
+	}
+}
+
+func TestAnalyzeSource_Generics_MethodWithTypeParam(t *testing.T) {
+	a, err := AnalyzeSource("generic.go", genericsCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	addFn := findFunc(a.Functions, "Add")
+	if addFn == nil {
+		t.Fatal("Add method not found")
+	}
+	if addFn.Receiver != "*Set[T]" {
+		t.Errorf("Add receiver: got %q, want %q", addFn.Receiver, "*Set[T]")
+	}
+}
+
+func TestAnalyzeSource_Generics_Constructor(t *testing.T) {
+	a, err := AnalyzeSource("generic.go", genericsCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	fn := findFunc(a.Functions, "NewSet")
+	if fn == nil {
+		t.Fatal("NewSet not found")
+	}
+	if fn.TypeParams != "[T comparable]" {
+		t.Errorf("NewSet type params: got %q, want %q", fn.TypeParams, "[T comparable]")
+	}
+	expected := "func NewSet[T comparable]() *Set[T]"
+	if fn.Signature != expected {
+		t.Errorf("NewSet signature:\n  got  %q\n  want %q", fn.Signature, expected)
+	}
+}
+
+func TestFilterTestable(t *testing.T) {
+	funcs := []FuncInfo{
+		{Name: "init"},
+		{Name: "Add"},
+		{Name: "init"},
+		{Name: "Process"},
+	}
+	result := FilterTestable(funcs)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 functions, got %d", len(result))
+	}
+	if result[0].Name != "Add" || result[1].Name != "Process" {
+		t.Errorf("unexpected functions: %v", result)
+	}
+}
+
+func TestFilterTestable_NoInit(t *testing.T) {
+	funcs := []FuncInfo{{Name: "Add"}, {Name: "Sub"}}
+	result := FilterTestable(funcs)
+	if len(result) != 2 {
+		t.Errorf("expected 2, got %d", len(result))
+	}
+}
+
+func TestDetectBuildTag_GoBuild(t *testing.T) {
+	src := "//go:build linux\n\npackage main\n"
+	tag := DetectBuildTag(src)
+	if tag != "linux" {
+		t.Errorf("expected linux, got %q", tag)
+	}
+}
+
+func TestDetectBuildTag_PlusBuild(t *testing.T) {
+	src := "// +build windows\n\npackage main\n"
+	tag := DetectBuildTag(src)
+	if tag != "windows" {
+		t.Errorf("expected windows, got %q", tag)
+	}
+}
+
+func TestDetectBuildTag_None(t *testing.T) {
+	src := "package main\n\nfunc main() {}\n"
+	tag := DetectBuildTag(src)
+	if tag != "" {
+		t.Errorf("expected empty, got %q", tag)
+	}
+}
+
+func TestExprToString_IndexExpr(t *testing.T) {
+	a, err := AnalyzeSource("generic.go", genericsCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	fn := findFunc(a.Functions, "NewSet")
+	if fn == nil {
+		t.Fatal("NewSet not found")
+	}
+	if len(fn.Returns) != 1 || fn.Returns[0] != "*Set[T]" {
+		t.Errorf("NewSet returns: got %v, want [*Set[T]]", fn.Returns)
+	}
+}

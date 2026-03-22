@@ -215,6 +215,8 @@ func main() {
 				Model:          modelName,
 				Duration:       time.Since(startTime),
 				BaseBranch:     *baseBranch,
+				RunID:          os.Getenv("GITHUB_RUN_ID"),
+				RepoFullName:   ghRepoVal,
 			}
 
 			// Calculate average diff coverage

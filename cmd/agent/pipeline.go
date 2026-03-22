@@ -15,7 +15,9 @@ import (
 	ghub "github.com/gizatulin/testgen-agent/internal/github"
 	"github.com/gizatulin/testgen-agent/internal/llm"
 	"github.com/gizatulin/testgen-agent/internal/merger"
+	"github.com/gizatulin/testgen-agent/internal/mockgen"
 	"github.com/gizatulin/testgen-agent/internal/mutation"
+	"github.com/gizatulin/testgen-agent/internal/patterns"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
 	"github.com/gizatulin/testgen-agent/internal/pruner"
 	"github.com/gizatulin/testgen-agent/internal/validator"
@@ -78,9 +80,14 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	pkgDir := filepath.Dir(fullPath)
 	pkgAnalysis, pkgErr := analyzer.AnalyzePackage(pkgDir)
 
+	if tag := analyzer.DetectBuildTag(readFileString(fullPath)); tag != "" {
+		fmt.Printf("     ⚠️  Build constraint: %s (may not compile on all platforms)\n", tag)
+	}
+
 	affectedFuncs := analyzer.FindFunctionsByLines(analysis, changedLines)
+	affectedFuncs = analyzer.FilterTestable(affectedFuncs)
 	if len(affectedFuncs) == 0 {
-		fmt.Printf("     ℹ️  Changes outside functions\n\n")
+		fmt.Printf("     ℹ️  Changes outside functions (or only init)\n\n")
 		return nil
 	}
 
@@ -116,6 +123,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	}
 
 	existingTests := readExistingTests(fullPath)
+	existingTestNames := prompt.ExtractTestFuncNames(existingTests)
 
 	useRace := opts.RaceDetection || opts.ProjectCfg.Race
 	var concInfos map[string]analyzer.ConcurrencyInfo
@@ -133,17 +141,50 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		}
 	}
 
+	mockCode := mockgen.GenerateMockCode(usedTypes)
+	if mockCode != "" {
+		mockCount := 0
+		for _, ti := range usedTypes {
+			if ti.Kind == "interface" && len(ti.Methods) > 0 {
+				mockCount++
+			}
+		}
+		fmt.Printf("     🎭 Generated %d mock(s) for interfaces\n", mockCount)
+	}
+
+	patternHints := patterns.DetectAll(affectedFuncs, analysis.Imports, usedTypes)
+	if len(patternHints) > 0 {
+		for fnName, hints := range patternHints {
+			kinds := make([]string, len(hints))
+			for i, h := range hints {
+				kinds[i] = string(h.Kind)
+			}
+			fmt.Printf("     🔍 %s: patterns (%s)\n", fnName, strings.Join(kinds, ", "))
+		}
+	}
+
 	req := prompt.TestGenRequest{
-		PackageName:      analysis.Package,
-		FilePath:         f.NewPath,
-		Imports:          analysis.Imports,
-		TargetFuncs:      affectedFuncs,
-		ExistingTests:    existingTests,
-		UsedTypes:        usedTypes,
-		CalledFuncs:      calledFuncs,
-		CustomPrompt:     opts.ProjectCfg.CustomPrompt,
-		ConcurrencyInfos: concInfos,
-		RaceDetection:    useRace,
+		PackageName:       analysis.Package,
+		FilePath:          f.NewPath,
+		Imports:           analysis.Imports,
+		TargetFuncs:       affectedFuncs,
+		ExistingTests:     existingTests,
+		ExistingTestNames: existingTestNames,
+		UsedTypes:         usedTypes,
+		CalledFuncs:       calledFuncs,
+		CustomPrompt:      opts.ProjectCfg.CustomPrompt,
+		ConcurrencyInfos:  concInfos,
+		RaceDetection:     useRace,
+		PatternHints:      patternHints,
+		MockCode:          mockCode,
+	}
+
+	budget := prompt.DefaultBudget()
+	if opts.ProjectCfg.MaxContextTokens > 0 {
+		budget.MaxTokens = opts.ProjectCfg.MaxContextTokens
+	}
+	if warning := prompt.EnforcePromptBudget(&req, budget); warning != "" {
+		fmt.Printf("     ⚠️  %s\n", warning)
 	}
 
 	messages := prompt.BuildMessages(req)
@@ -316,7 +357,8 @@ func filterBySmartDiff(funcs []analyzer.FuncInfo, repoPath, baseBranch, filePath
 }
 
 // runGenerationLoop attempts to generate and validate tests up to maxRetries times.
-// Returns the generated code, last test output, and whether generation succeeded.
+// LLM generates ONLY new test functions; they are merged with existing tests before validation.
+// Returns the merged code, the raw LLM output, last test output, and whether generation succeeded.
 func runGenerationLoop(
 	client *llm.Client,
 	cfg llm.Config,
@@ -330,7 +372,8 @@ func runGenerationLoop(
 	usedTypes []analyzer.TypeInfo,
 	relPath string,
 ) (string, string, bool) {
-	var generatedCode string
+	var mergedCode string
+	var rawNewCode string
 	var lastTestOutput string
 	var lastValError string
 
@@ -347,7 +390,16 @@ func runGenerationLoop(
 		if attempt == 1 {
 			result, err = client.Generate(prompt.BuildMessages(req))
 		} else {
-			fixMessages := prompt.BuildFixMessages(req, generatedCode, lastValError, attempt)
+			var failingNames []string
+			if lastTestOutput != "" {
+				testResults := pruner.ParseTestOutput(lastTestOutput)
+				failingNames = pruner.FailingTopLevel(testResults)
+				if len(failingNames) > 0 {
+					fmt.Printf("     🎯 Focusing fix on %d failing test(s): %s\n",
+						len(failingNames), strings.Join(failingNames, ", "))
+				}
+			}
+			fixMessages := prompt.BuildFixMessages(req, rawNewCode, lastValError, attempt, failingNames)
 			result, err = client.Generate(fixMessages)
 		}
 
@@ -356,29 +408,30 @@ func runGenerationLoop(
 			break
 		}
 
-		generatedCode = result.Content
+		rawNewCode = result.Content
 		fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
 			result.PromptTokens, result.CompletionTokens)
 
+		mergedCode = rawNewCode
 		if existingTests != "" {
-			mergeResult, mergeErr := merger.Merge(existingTests, generatedCode)
+			mergeResult, mergeErr := merger.Merge(existingTests, rawNewCode)
 			if mergeErr != nil {
 				fmt.Printf("     ⚠️  AST merge failed, using raw LLM output: %v\n", mergeErr)
 			} else {
-				generatedCode = mergeResult.Code
+				mergedCode = mergeResult.Code
 				if len(mergeResult.Added) > 0 {
 					fmt.Printf("     🔀 Merged: +%d new funcs", len(mergeResult.Added))
 					if len(mergeResult.Skipped) > 0 {
-						fmt.Printf(", %d existing preserved", len(mergeResult.Skipped))
+						fmt.Printf(", %d duplicates skipped", len(mergeResult.Skipped))
 					}
 					fmt.Println()
 				}
 			}
 		}
 
-		dedupResult, dedupErr := dedup.Dedup(generatedCode)
+		dedupResult, dedupErr := dedup.Dedup(mergedCode)
 		if dedupErr == nil && dedupResult.Removed > 0 {
-			generatedCode = dedupResult.Code
+			mergedCode = dedupResult.Code
 			fmt.Printf("     🧹 Dedup: removed %d duplicate case(s)\n", dedupResult.Removed)
 		}
 
@@ -387,14 +440,14 @@ func runGenerationLoop(
 			break
 		}
 
-		if err := os.WriteFile(testFilePath, []byte(generatedCode), 0644); err != nil {
+		if err := os.WriteFile(testFilePath, []byte(mergedCode), 0644); err != nil {
 			fmt.Printf("     ❌ Cannot write file: %v\n", err)
 			break
 		}
 
 		if opts.NoValidate {
 			fmt.Printf("     💾 Tests saved: %s (validation disabled)\n\n", testFilePath)
-			return generatedCode, lastTestOutput, true
+			return mergedCode, lastTestOutput, true
 		}
 
 		fmt.Printf("     🔬 Validating...\n")
@@ -417,7 +470,7 @@ func runGenerationLoop(
 
 			fmt.Printf("     💾 Tests saved: %s\n\n", testFilePath)
 			updateCache(opts.FnCache, relPath, affectedFuncs, usedTypes, testFilePath, cfg.Model)
-			return generatedCode, lastTestOutput, true
+			return mergedCode, lastTestOutput, true
 		}
 
 		lastValError = valResult.Summary()
@@ -429,7 +482,7 @@ func runGenerationLoop(
 		}
 	}
 
-	return generatedCode, lastTestOutput, false
+	return mergedCode, lastTestOutput, false
 }
 
 // tryPrune attempts to salvage passing tests from a failed generation by pruning failing ones.
@@ -526,6 +579,14 @@ func runMutationTesting(affectedFuncs []analyzer.FuncInfo, fullPath string) (sco
 	}
 
 	return mutResult.MutationScore, mutResult.Killed, mutResult.Total
+}
+
+func readFileString(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func buildFileReport(filePath string, funcs []analyzer.FuncInfo, generated, validated int, diffCov, coverageTarget float64, success bool, mutScore float64, mutKilled, mutTotal int) ghub.FileReport {

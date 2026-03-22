@@ -23,6 +23,7 @@ type FuncInfo struct {
 	Returns    []string // return types
 	Body       string   // function body (source code)
 	DocComment string   // doc comment above the function
+	TypeParams string   // generic type params, e.g. "[T any, U comparable]"
 }
 
 // Param represents a function parameter.
@@ -39,6 +40,7 @@ type TypeInfo struct {
 	Methods    []MethodInfo // interface methods
 	Underlying string       // underlying type for aliases
 	Source     string       // source code of the declaration
+	TypeParams string       // generic type params, e.g. "[T comparable]"
 }
 
 // FieldInfo represents a struct field.
@@ -338,6 +340,10 @@ func extractTypeInfo(fset *token.FileSet, ts *ast.TypeSpec, lines []string) Type
 		Name: ts.Name.Name,
 	}
 
+	if ts.TypeParams != nil && len(ts.TypeParams.List) > 0 {
+		ti.TypeParams = typeParamsToString(ts.TypeParams)
+	}
+
 	startPos := fset.Position(ts.Pos())
 	endPos := fset.Position(ts.End())
 
@@ -491,6 +497,11 @@ func extractFuncInfo(fset *token.FileSet, fn *ast.FuncDecl, lines []string) Func
 		}
 	}
 
+	// Type parameters (generics)
+	if fn.Type.TypeParams != nil {
+		fi.TypeParams = typeParamsToString(fn.Type.TypeParams)
+	}
+
 	// Signature
 	fi.Signature = buildSignature(fi)
 
@@ -508,6 +519,21 @@ func extractFuncInfo(fset *token.FileSet, fn *ast.FuncDecl, lines []string) Func
 	return fi
 }
 
+// typeParamsToString converts a FieldList of type parameters to "[T any, U comparable]" form.
+func typeParamsToString(fl *ast.FieldList) string {
+	if fl == nil || len(fl.List) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, field := range fl.List {
+		constraint := exprToString(field.Type)
+		for _, name := range field.Names {
+			parts = append(parts, name.Name+" "+constraint)
+		}
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 // buildSignature builds a string signature for a function.
 func buildSignature(fi FuncInfo) string {
 	var sb strings.Builder
@@ -521,6 +547,9 @@ func buildSignature(fi FuncInfo) string {
 	}
 
 	sb.WriteString(fi.Name)
+	if fi.TypeParams != "" {
+		sb.WriteString(fi.TypeParams)
+	}
 	sb.WriteString("(")
 
 	for i, p := range fi.Params {
@@ -548,6 +577,40 @@ func buildSignature(fi FuncInfo) string {
 	}
 
 	return sb.String()
+}
+
+// FilterTestable removes functions that shouldn't be tested (e.g. init).
+func FilterTestable(funcs []FuncInfo) []FuncInfo {
+	var result []FuncInfo
+	for _, fn := range funcs {
+		if fn.Name == "init" {
+			continue
+		}
+		result = append(result, fn)
+	}
+	return result
+}
+
+// DetectBuildTag checks if a Go source file has a build constraint.
+// Returns the constraint string (e.g. "linux") or empty if none.
+func DetectBuildTag(src string) string {
+	lines := strings.Split(src, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "//go:build ") {
+			return strings.TrimPrefix(trimmed, "//go:build ")
+		}
+		if strings.HasPrefix(trimmed, "// +build ") {
+			return strings.TrimPrefix(trimmed, "// +build ")
+		}
+		if strings.HasPrefix(trimmed, "package ") {
+			break
+		}
+	}
+	return ""
 }
 
 // FindFunctionsByLines finds functions that overlap with the given line numbers.
@@ -595,6 +658,14 @@ func exprToString(expr ast.Expr) string {
 		return "func" + funcTypeToString(t)
 	case *ast.ChanType:
 		return "chan " + exprToString(t.Value)
+	case *ast.IndexExpr:
+		return exprToString(t.X) + "[" + exprToString(t.Index) + "]"
+	case *ast.IndexListExpr:
+		var parts []string
+		for _, idx := range t.Indices {
+			parts = append(parts, exprToString(idx))
+		}
+		return exprToString(t.X) + "[" + strings.Join(parts, ", ") + "]"
 	default:
 		return fmt.Sprintf("%T", expr)
 	}

@@ -212,7 +212,12 @@ func CoveredLines(blocks []CoverageBlock, fileSuffix string) map[int]bool {
 // changedLines are the changed line numbers from diff.
 // blocks are all coverage blocks from go test -coverprofile.
 // fileSuffix is the file path suffix for matching against the coverage profile.
-func CalculateDiffCoverage(fileSuffix string, changedLines []int, blocks []CoverageBlock) DiffCoverageResult {
+// sourcePath (optional) filters out non-executable lines (comments, imports, blanks).
+func CalculateDiffCoverage(fileSuffix string, changedLines []int, blocks []CoverageBlock, sourcePath ...string) DiffCoverageResult {
+	if len(sourcePath) > 0 && sourcePath[0] != "" {
+		changedLines = FilterExecutableLines(sourcePath[0], changedLines)
+	}
+
 	result := DiffCoverageResult{
 		FilePath:     fileSuffix,
 		ChangedLines: changedLines,
