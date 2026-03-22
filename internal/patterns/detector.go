@@ -336,8 +336,12 @@ func detectErrorsWrap(fn analyzer.FuncInfo) *PatternHint {
 		Guide: `This function uses error wrapping or inspection (errors.Is/As/New, fmt.Errorf with %w).
 In tests:
 - Use errors.Is() and errors.As() for error comparison — do NOT use == for wrapped errors
-- Test that wrapped errors can be unwrapped to the original sentinel
-- When testing fmt.Errorf with %w, verify the error chain with errors.Is()
+- When testing fmt.Errorf with %w: the wrapped error is whatever the function ACTUALLY wraps.
+  READ THE CODE to see which error is wrapped. Do NOT assume it wraps a package-level sentinel
+  unless the code explicitly uses that sentinel (e.g. fmt.Errorf("...: %w", ErrNotFound)).
+  If the function wraps an error from another call (e.g. json.Unmarshal), the chain contains
+  THAT error, not a package-level sentinel.
+- Only use errors.Is(err, SentinelVar) when the code path actually wraps that specific sentinel.
 - Test both the error message and the underlying error type`,
 	}
 }

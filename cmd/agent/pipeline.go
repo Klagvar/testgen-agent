@@ -67,6 +67,11 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		return nil
 	}
 
+	if len(changedLines) == 0 {
+		fmt.Printf("     ⏭️  Skipped (deleted or no changed lines)\n\n")
+		return nil
+	}
+
 	if opts.ProjectCfg.ShouldExclude(f.NewPath) {
 		fmt.Printf("     ⏭️  Skipped by config (exclude pattern)\n\n")
 		return nil
@@ -444,6 +449,8 @@ func runGenerationLoop(
 		fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
 			result.PromptTokens, result.CompletionTokens)
 
+		rawNewCode = injectMockIfMissing(rawNewCode, req.MockCode, usedTypes)
+
 		mergedCode = rawNewCode
 		if existingTests != "" {
 			mergeResult, mergeErr := merger.Merge(existingTests, rawNewCode)
@@ -627,6 +634,26 @@ func readFileString(path string) string {
 		return ""
 	}
 	return string(data)
+}
+
+// injectMockIfMissing checks if the LLM-generated code references mock types
+// but doesn't define them. If so, appends pre-generated mock code.
+func injectMockIfMissing(code, mockCode string, usedTypes []analyzer.TypeInfo) string {
+	if mockCode == "" {
+		return code
+	}
+	mocks := mockgen.GenerateMocks(usedTypes)
+	injected := false
+	for _, m := range mocks {
+		if strings.Contains(code, m.MockName) && !strings.Contains(code, "type "+m.MockName+" struct") {
+			code += "\n" + m.Code + "\n"
+			injected = true
+		}
+	}
+	if injected {
+		fmt.Printf("     🎭 Auto-injected missing mock definition(s)\n")
+	}
+	return code
 }
 
 func buildFileReport(filePath string, funcs []analyzer.FuncInfo, generated, validated int, diffCov, coverageTarget float64, success bool, mutScore float64, mutKilled, mutTotal int) ghub.FileReport {
