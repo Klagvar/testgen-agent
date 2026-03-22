@@ -1,5 +1,5 @@
-// Package config загружает настройки проекта из .testgen.yml.
-// Приоритет: CLI-флаги > env переменные > .testgen.yml > дефолты.
+// Package config loads project settings from .testgen.yml.
+// Priority: CLI flags > env variables > .testgen.yml > defaults.
 package config
 
 import (
@@ -13,7 +13,7 @@ import (
 
 const configFileName = ".testgen.yml"
 
-// Config — настройки агента.
+// Config holds agent settings.
 type Config struct {
 	// LLM settings
 	Model  string `yaml:"model"`

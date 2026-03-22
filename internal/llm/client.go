@@ -1,5 +1,5 @@
-// Package llm реализует клиент для взаимодействия с LLM через OpenAI-совместимый API.
-// Поддерживает: OpenAI, OpenRouter, локальные модели (Ollama, LM Studio и др.)
+// Package llm implements a client for interacting with LLMs via the OpenAI-compatible API.
+// Supports: OpenAI, OpenRouter, local models (Ollama, LM Studio, etc.)
 package llm
 
 import (
@@ -7,39 +7,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gizatulin/testgen-agent/internal/prompt"
 )
 
-// Config — настройки LLM-клиента.
+// Config holds LLM client settings.
 type Config struct {
-	APIKey  string  // API-ключ (пустой для локальных моделей)
-	BaseURL string  // базовый URL API (например, https://api.openai.com/v1)
-	Model   string  // имя модели (например, gpt-4o, deepseek-coder, и т.д.)
-	Timeout int     // таймаут в секундах (по умолчанию 120)
-	MaxTokens int   // максимальное количество токенов ответа (0 = без ограничений)
+	APIKey     string // API key (empty for local models)
+	BaseURL    string // base API URL (e.g., https://api.openai.com/v1)
+	Model      string // model name (e.g., gpt-4o, deepseek-coder, etc.)
+	Timeout    int    // timeout in seconds (default 120)
+	MaxTokens  int    // max response tokens (0 = unlimited)
+	MaxRetries int    // max HTTP retries on transient errors (default 3)
 }
 
-// DefaultConfig возвращает конфигурацию по умолчанию (OpenAI).
+// DefaultConfig returns the default configuration (OpenAI).
 func DefaultConfig() Config {
 	return Config{
-		BaseURL:   "https://api.openai.com/v1",
-		Model:     "gpt-4o-mini",
-		Timeout:   300,
-		MaxTokens: 4096,
+		BaseURL:    "https://api.openai.com/v1",
+		Model:      "gpt-4o-mini",
+		Timeout:    300,
+		MaxTokens:  4096,
+		MaxRetries: 3,
 	}
 }
 
-// Client — LLM-клиент.
+// Client is the LLM client.
 type Client struct {
 	config Config
 	http   *http.Client
 }
 
-// NewClient создаёт новый LLM-клиент.
+// NewClient creates a new LLM client.
 func NewClient(cfg Config) *Client {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 300
@@ -56,14 +60,14 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// chatRequest — тело запроса к LLM API.
+// chatRequest is the LLM API request body.
 type chatRequest struct {
 	Model     string           `json:"model"`
 	Messages  []prompt.Message `json:"messages"`
 	MaxTokens int              `json:"max_tokens,omitempty"`
 }
 
-// chatResponse — ответ LLM API.
+// chatResponse is the LLM API response.
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -82,16 +86,26 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// GenerateResponse — результат генерации.
+// GenerateResponse holds the generation result.
 type GenerateResponse struct {
-	Content          string // текст ответа
-	PromptTokens     int    // количество токенов в промпте
-	CompletionTokens int    // количество токенов в ответе
-	TotalTokens      int    // общее количество токенов
-	Model            string // модель, которая сгенерировала ответ
+	Content          string // response text
+	PromptTokens     int    // number of prompt tokens
+	CompletionTokens int    // number of completion tokens
+	TotalTokens      int    // total token count
+	Model            string // model that generated the response
 }
 
-// Generate отправляет сообщения в LLM и возвращает ответ.
+// isRetryableStatus returns true for HTTP status codes worth retrying.
+func isRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests ||
+		code == http.StatusInternalServerError ||
+		code == http.StatusBadGateway ||
+		code == http.StatusServiceUnavailable ||
+		code == http.StatusGatewayTimeout
+}
+
+// Generate sends messages to the LLM and returns the response.
+// Retries transient HTTP errors with exponential backoff + jitter.
 func (c *Client) Generate(messages []prompt.Message) (*GenerateResponse, error) {
 	reqBody := chatRequest{
 		Model:    c.config.Model,
@@ -103,73 +117,94 @@ func (c *Client) Generate(messages []prompt.Message) (*GenerateResponse, error) 
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка сериализации запроса: %w", err)
+		return nil, fmt.Errorf("error serializing request: %w", err)
 	}
 
 	url := strings.TrimRight(c.config.BaseURL, "/") + "/chat/completions"
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("ошибка создания HTTP-запроса: %w", err)
+	maxAttempts := c.config.MaxRetries
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	if c.config.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Intn(500)) * time.Millisecond
+			time.Sleep(backoff + jitter)
+		}
+
+		req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, fmt.Errorf("error creating HTTP request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		if c.config.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("HTTP request to LLM failed: %w", err)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("error reading LLM response: %w", err)
+			continue
+		}
+
+		if isRetryableStatus(resp.StatusCode) {
+			lastErr = fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var chatResp chatResponse
+		if err := json.Unmarshal(body, &chatResp); err != nil {
+			return nil, fmt.Errorf("error parsing LLM response: %w", err)
+		}
+
+		if chatResp.Error != nil {
+			return nil, fmt.Errorf("LLM API error: [%s] %s", chatResp.Error.Type, chatResp.Error.Message)
+		}
+
+		if len(chatResp.Choices) == 0 {
+			return nil, fmt.Errorf("LLM API returned empty response")
+		}
+
+		content := chatResp.Choices[0].Message.Content
+		content = cleanCodeResponse(content)
+
+		return &GenerateResponse{
+			Content:          content,
+			PromptTokens:     chatResp.Usage.PromptTokens,
+			CompletionTokens: chatResp.Usage.CompletionTokens,
+			TotalTokens:      chatResp.Usage.TotalTokens,
+			Model:            c.config.Model,
+		}, nil
 	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка HTTP-запроса к LLM: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка чтения ответа LLM: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LLM API вернул статус %d: %s", resp.StatusCode, string(body))
-	}
-
-	var chatResp chatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return nil, fmt.Errorf("ошибка парсинга ответа LLM: %w", err)
-	}
-
-	if chatResp.Error != nil {
-		return nil, fmt.Errorf("LLM API ошибка: [%s] %s", chatResp.Error.Type, chatResp.Error.Message)
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("LLM API вернул пустой ответ")
-	}
-
-	content := chatResp.Choices[0].Message.Content
-
-	// Очищаем от markdown-обёрток, если LLM вернула с ними
-	content = cleanCodeResponse(content)
-
-	return &GenerateResponse{
-		Content:          content,
-		PromptTokens:     chatResp.Usage.PromptTokens,
-		CompletionTokens: chatResp.Usage.CompletionTokens,
-		TotalTokens:      chatResp.Usage.TotalTokens,
-		Model:            c.config.Model,
-	}, nil
+	return nil, fmt.Errorf("LLM request failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
-// cleanCodeResponse убирает markdown-обёртки из ответа LLM.
+// codeBlockRe matches opening fenced code blocks with optional language tags.
+var codeBlockRe = regexp.MustCompile("^```[a-zA-Z]*\\s*\n?")
+
+// cleanCodeResponse removes markdown wrappers from the LLM response.
+// Handles ```go, ```golang, ```Go, bare ```, and trailing ```.
 func cleanCodeResponse(s string) string {
 	s = strings.TrimSpace(s)
 
-	// Убираем ```go ... ```
-	if strings.HasPrefix(s, "```go") {
-		s = strings.TrimPrefix(s, "```go")
-		s = strings.TrimSpace(s)
-	} else if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```")
+	if loc := codeBlockRe.FindStringIndex(s); loc != nil && loc[0] == 0 {
+		s = s[loc[1]:]
 		s = strings.TrimSpace(s)
 	}
 

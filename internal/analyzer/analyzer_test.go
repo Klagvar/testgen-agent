@@ -11,7 +11,7 @@ import (
 	"math"
 )
 
-// Add складывает два числа. Поддерживает проверку на переполнение.
+// Add sums two numbers. Supports overflow checking.
 func Add(a, b int) (int, error) {
 	result := a + b
 	if (b > 0 && result < a) || (b < 0 && result > a) {
@@ -20,12 +20,12 @@ func Add(a, b int) (int, error) {
 	return result, nil
 }
 
-// Subtract вычитает b из a.
+// Subtract subtracts b from a.
 func Subtract(a, b int) int {
 	return a - b
 }
 
-// Divide делит a на b.
+// Divide divides a by b.
 func Divide(a, b int) (int, error) {
 	if b == 0 {
 		return 0, errors.New("division by zero")
@@ -33,12 +33,12 @@ func Divide(a, b int) (int, error) {
 	return a / b, nil
 }
 
-// Multiply умножает два числа.
+// Multiply multiplies two numbers.
 func Multiply(a, b int) int {
 	return a * b
 }
 
-// Sqrt возвращает квадратный корень числа.
+// Sqrt returns the square root of a number.
 func Sqrt(x float64) (float64, error) {
 	if x < 0 {
 		return 0, errors.New("negative number")
@@ -50,28 +50,28 @@ func Sqrt(x float64) (float64, error) {
 func TestAnalyzeSource_Package(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
 	if analysis.Package != "calc" {
-		t.Errorf("Package = %q, ожидалось %q", analysis.Package, "calc")
+		t.Errorf("Package = %q, expected %q", analysis.Package, "calc")
 	}
 }
 
 func TestAnalyzeSource_Imports(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
 	if len(analysis.Imports) != 2 {
-		t.Fatalf("ожидалось 2 импорта, получено %d: %v", len(analysis.Imports), analysis.Imports)
+		t.Fatalf("expected 2 imports, got %d: %v", len(analysis.Imports), analysis.Imports)
 	}
 
 	expected := map[string]bool{"errors": true, "math": true}
 	for _, imp := range analysis.Imports {
 		if !expected[imp] {
-			t.Errorf("неожиданный импорт: %q", imp)
+			t.Errorf("unexpected import: %q", imp)
 		}
 	}
 }
@@ -79,24 +79,24 @@ func TestAnalyzeSource_Imports(t *testing.T) {
 func TestAnalyzeSource_Functions(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
 	if len(analysis.Functions) != 5 {
-		t.Fatalf("ожидалось 5 функций, получено %d", len(analysis.Functions))
+		t.Fatalf("expected 5 functions, got %d", len(analysis.Functions))
 	}
 
-	// Проверяем имена
+	// Check names
 	names := make([]string, len(analysis.Functions))
 	for i, fn := range analysis.Functions {
 		names[i] = fn.Name
 	}
-	t.Logf("Функции: %v", names)
+	t.Logf("Functions: %v", names)
 
 	expectedNames := []string{"Add", "Subtract", "Divide", "Multiply", "Sqrt"}
 	for i, expected := range expectedNames {
 		if names[i] != expected {
-			t.Errorf("функция %d: имя = %q, ожидалось %q", i, names[i], expected)
+			t.Errorf("function %d: name = %q, expected %q", i, names[i], expected)
 		}
 	}
 }
@@ -104,7 +104,7 @@ func TestAnalyzeSource_Functions(t *testing.T) {
 func TestAnalyzeSource_FuncSignature(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
 	tests := []struct {
@@ -130,17 +130,17 @@ func TestAnalyzeSource_FuncSignature(t *testing.T) {
 				}
 			}
 			if fn == nil {
-				t.Fatalf("функция %q не найдена", tt.name)
+				t.Fatalf("function %q not found", tt.name)
 			}
 
 			if fn.Signature != tt.wantSig {
-				t.Errorf("сигнатура = %q, ожидалось %q", fn.Signature, tt.wantSig)
+				t.Errorf("signature = %q, expected %q", fn.Signature, tt.wantSig)
 			}
 			if len(fn.Params) != tt.wantParams {
-				t.Errorf("параметров = %d, ожидалось %d", len(fn.Params), tt.wantParams)
+				t.Errorf("params = %d, expected %d", len(fn.Params), tt.wantParams)
 			}
 			if len(fn.Returns) != tt.wantReturns {
-				t.Errorf("возвратов = %d, ожидалось %d", len(fn.Returns), tt.wantReturns)
+				t.Errorf("returns = %d, expected %d", len(fn.Returns), tt.wantReturns)
 			}
 		})
 	}
@@ -149,12 +149,12 @@ func TestAnalyzeSource_FuncSignature(t *testing.T) {
 func TestAnalyzeSource_DocComment(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
 	addFunc := analysis.Functions[0]
 	if addFunc.DocComment == "" {
-		t.Error("Add должна иметь DocComment")
+		t.Error("Add should have DocComment")
 	}
 	t.Logf("Add DocComment: %q", addFunc.DocComment)
 }
@@ -162,15 +162,15 @@ func TestAnalyzeSource_DocComment(t *testing.T) {
 func TestAnalyzeSource_LineNumbers(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
-	// Add начинается где-то на строке 9 и заканчивается ~15
+	// Add starts around line 9 and ends ~15
 	addFunc := analysis.Functions[0]
-	t.Logf("Add: строки %d-%d", addFunc.StartLine, addFunc.EndLine)
+	t.Logf("Add: lines %d-%d", addFunc.StartLine, addFunc.EndLine)
 
 	if addFunc.StartLine < 5 || addFunc.StartLine > 15 {
-		t.Errorf("Add StartLine = %d, выглядит некорректно", addFunc.StartLine)
+		t.Errorf("Add StartLine = %d, looks incorrect", addFunc.StartLine)
 	}
 	if addFunc.EndLine <= addFunc.StartLine {
 		t.Errorf("Add EndLine (%d) <= StartLine (%d)", addFunc.EndLine, addFunc.StartLine)
@@ -180,26 +180,26 @@ func TestAnalyzeSource_LineNumbers(t *testing.T) {
 func TestFindFunctionsByLines(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
-	// Логируем позиции всех функций
+	// Log all function positions
 	for _, fn := range analysis.Functions {
-		t.Logf("%s: строки %d-%d", fn.Name, fn.StartLine, fn.EndLine)
+		t.Logf("%s: lines %d-%d", fn.Name, fn.StartLine, fn.EndLine)
 	}
 
-	// Имитируем изменённые строки из diff:
-	// Строки функции Add + строки новых функций Multiply и Sqrt
-	// Нам нужно узнать реальные номера строк из анализа
+	// Simulate changed lines from diff:
+	// Lines of function Add + lines of new functions Multiply and Sqrt
+	// We need the actual line numbers from the analysis
 	addFunc := analysis.Functions[0]       // Add
 	multiplyFunc := analysis.Functions[3]  // Multiply
 	sqrtFunc := analysis.Functions[4]      // Sqrt
 
 	changedLines := []int{
-		addFunc.StartLine,     // затрагивает Add
-		addFunc.StartLine + 1, // тоже Add
-		multiplyFunc.StartLine, // затрагивает Multiply
-		sqrtFunc.StartLine + 1, // затрагивает Sqrt
+		addFunc.StartLine,     // affects Add
+		addFunc.StartLine + 1, // also Add
+		multiplyFunc.StartLine, // affects Multiply
+		sqrtFunc.StartLine + 1, // affects Sqrt
 	}
 
 	found := FindFunctionsByLines(analysis, changedLines)
@@ -209,10 +209,10 @@ func TestFindFunctionsByLines(t *testing.T) {
 		for i, fn := range found {
 			names[i] = fn.Name
 		}
-		t.Fatalf("ожидалось 3 функции, получено %d: %v", len(found), names)
+		t.Fatalf("expected 3 functions, got %d: %v", len(found), names)
 	}
 
-	// Проверяем что нашли Add, Multiply и Sqrt (но НЕ Subtract и Divide)
+	// Check that we found Add, Multiply and Sqrt (but NOT Subtract and Divide)
 	foundNames := map[string]bool{}
 	for _, fn := range found {
 		foundNames[fn.Name] = true
@@ -220,12 +220,12 @@ func TestFindFunctionsByLines(t *testing.T) {
 
 	for _, expected := range []string{"Add", "Multiply", "Sqrt"} {
 		if !foundNames[expected] {
-			t.Errorf("функция %q не найдена среди затронутых", expected)
+			t.Errorf("function %q not found among affected", expected)
 		}
 	}
 	for _, notExpected := range []string{"Subtract", "Divide"} {
 		if foundNames[notExpected] {
-			t.Errorf("функция %q не должна быть среди затронутых", notExpected)
+			t.Errorf("function %q should not be among affected", notExpected)
 		}
 	}
 }
@@ -233,19 +233,19 @@ func TestFindFunctionsByLines(t *testing.T) {
 func TestAnalyzeSource_Body(t *testing.T) {
 	analysis, err := AnalyzeSource("calc.go", sampleCode)
 	if err != nil {
-		t.Fatalf("AnalyzeSource вернул ошибку: %v", err)
+		t.Fatalf("AnalyzeSource returned error: %v", err)
 	}
 
 	multiplyFunc := analysis.Functions[3] // Multiply
 	t.Logf("Multiply body:\n%s", multiplyFunc.Body)
 
 	if multiplyFunc.Body == "" {
-		t.Error("Multiply должна иметь тело")
+		t.Error("Multiply should have body")
 	}
 
-	// Тело должно содержать return a * b
+	// Body should contain return a * b
 	if !contains(multiplyFunc.Body, "return a * b") {
-		t.Errorf("тело Multiply не содержит 'return a * b'")
+		t.Errorf("Multiply body does not contain 'return a * b'")
 	}
 }
 
@@ -262,47 +262,47 @@ func containsSubstr(s, substr string) bool {
 	return false
 }
 
-// ─── Тесты для TypeInfo и PackageAnalysis ───
+// ─── Tests for TypeInfo and PackageAnalysis ───
 
 const sampleCodeWithTypes = `package service
 
 import "errors"
 
-// Config содержит настройки сервиса.
+// Config holds service settings.
 type Config struct {
 	Host    string
 	Port    int
 	Verbose bool
 }
 
-// Repository — интерфейс доступа к данным.
+// Repository is the data access interface.
 type Repository interface {
 	Get(id string) (*Entity, error)
 	Save(entity *Entity) error
 	Delete(id string) error
 }
 
-// Entity — доменная сущность.
+// Entity is a domain entity.
 type Entity struct {
 	ID   string
 	Name string
 }
 
-// Status — алиас для строки.
+// Status is a string alias.
 type Status string
 
-// Service предоставляет бизнес-логику.
+// Service provides business logic.
 type Service struct {
 	config *Config
 	repo   Repository
 }
 
-// NewService создаёт новый сервис.
+// NewService creates a new service.
 func NewService(cfg *Config, repo Repository) *Service {
 	return &Service{config: cfg, repo: repo}
 }
 
-// GetEntity получает сущность по ID.
+// GetEntity retrieves an entity by ID.
 func (s *Service) GetEntity(id string) (*Entity, error) {
 	if id == "" {
 		return nil, errors.New("empty id")
@@ -310,12 +310,12 @@ func (s *Service) GetEntity(id string) (*Entity, error) {
 	return s.repo.Get(id)
 }
 
-// helper — вспомогательная функция.
+// helper is a utility function.
 func helper(s string) string {
 	return s + "_processed"
 }
 
-// ProcessEntity обрабатывает сущность.
+// ProcessEntity processes an entity.
 func (s *Service) ProcessEntity(id string) (string, error) {
 	entity, err := s.GetEntity(id)
 	if err != nil {

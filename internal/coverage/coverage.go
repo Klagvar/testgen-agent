@@ -1,7 +1,7 @@
-// Package coverage реализует расчёт diff coverage —
-// метрики покрытия тестами только изменённых строк кода.
+// Package coverage implements diff coverage calculation —
+// a metric for test coverage of only changed lines of code.
 //
-// Формула: DC = |covered ∩ changed| / |changed| × 100%
+// Formula: DC = |covered ∩ changed| / |changed| × 100%
 package coverage
 
 import (
@@ -13,28 +13,28 @@ import (
 	"strings"
 )
 
-// CoverageBlock — один блок покрытия из Go coverage profile.
-// Формат строки: file.go:startLine.startCol,endLine.endCol numStatements count
+// CoverageBlock represents a single coverage block from a Go coverage profile.
+// Line format: file.go:startLine.startCol,endLine.endCol numStatements count
 type CoverageBlock struct {
-	File       string // путь к файлу (относительно модуля)
+	File       string // file path (relative to module)
 	StartLine  int
 	StartCol   int
 	EndLine    int
 	EndCol     int
-	NumStmt    int // количество statements
-	Count      int // сколько раз выполнялся (0 = не покрыт)
+	NumStmt    int // number of statements
+	Count      int // execution count (0 = not covered)
 }
 
-// DiffCoverageResult — результат расчёта diff coverage.
+// DiffCoverageResult holds the diff coverage calculation result.
 type DiffCoverageResult struct {
-	FilePath       string  // путь к файлу
-	ChangedLines   []int   // изменённые строки
-	CoveredLines   []int   // покрытые тестами строки (из changed)
-	UncoveredLines []int   // непокрытые строки (из changed)
-	Coverage       float64 // DC в процентах (0–100)
+	FilePath       string  // file path
+	ChangedLines   []int   // changed lines
+	CoveredLines   []int   // lines covered by tests (from changed)
+	UncoveredLines []int   // uncovered lines (from changed)
+	Coverage       float64 // DC as percentage (0–100)
 }
 
-// TotalResult — агрегированный результат по всем файлам.
+// TotalResult holds the aggregated result across all files.
 type TotalResult struct {
 	Files          []DiffCoverageResult
 	TotalChanged   int
@@ -43,18 +43,18 @@ type TotalResult struct {
 	Coverage       float64
 }
 
-// Summary возвращает текстовое описание результата.
+// Summary returns a text description of the result.
 func (r *TotalResult) Summary() string {
 	return fmt.Sprintf("Diff coverage: %.1f%% (%d/%d changed lines covered)",
 		r.Coverage, r.TotalCovered, r.TotalChanged)
 }
 
-// RunCoverage запускает go test -coverprofile в указанном модуле
-// и возвращает путь к файлу профиля.
+// RunCoverage runs go test -coverprofile in the specified module
+// and returns the profile file path.
 func RunCoverage(moduleRoot string, pkgDir string) (string, string, error) {
 	coverFile := filepath.Join(moduleRoot, "cover.out")
 
-	// Определяем относительный путь пакета
+	// Determine relative package path
 	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
 		relPkg = "."
@@ -81,9 +81,9 @@ func RunCoverage(moduleRoot string, pkgDir string) (string, string, error) {
 	return coverFile, string(output), nil
 }
 
-// ParseProfile парсит Go coverage profile файл.
-// Формат: mode: set/count/atomic на первой строке,
-// далее строки вида: file.go:startLine.startCol,endLine.endCol numStatements count
+// ParseProfile parses a Go coverage profile file.
+// Format: mode: set/count/atomic on the first line,
+// followed by lines like: file.go:startLine.startCol,endLine.endCol numStatements count
 func ParseProfile(content string) ([]CoverageBlock, error) {
 	var blocks []CoverageBlock
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -91,7 +91,7 @@ func ParseProfile(content string) ([]CoverageBlock, error) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
-		// Пропускаем пустые строки и заголовок mode:
+		// Skip blank lines and mode: header
 		if line == "" || strings.HasPrefix(line, "mode:") {
 			continue
 		}
@@ -106,13 +106,13 @@ func ParseProfile(content string) ([]CoverageBlock, error) {
 	return blocks, scanner.Err()
 }
 
-// parseCoverageLine парсит одну строку coverage profile.
-// Формат: path/file.go:startLine.startCol,endLine.endCol numStmt count
+// parseCoverageLine parses a single coverage profile line.
+// Format: path/file.go:startLine.startCol,endLine.endCol numStmt count
 func parseCoverageLine(line string) (CoverageBlock, error) {
 	var block CoverageBlock
 
-	// Разделяем: "file.go:10.5,20.3 1 1"
-	// Находим последний пробел-разделённый участок
+	// Split: "file.go:10.5,20.3 1 1"
+	// Find the last space-separated segment
 	parts := strings.Fields(line)
 	if len(parts) != 3 {
 		return block, fmt.Errorf("expected 3 fields, got %d", len(parts))
@@ -134,7 +134,7 @@ func parseCoverageLine(line string) (CoverageBlock, error) {
 	}
 	block.Count = count
 
-	// Парсим "file.go:10.5,20.3"
+	// Parse "file.go:10.5,20.3"
 	fileRange := parts[0]
 	colonIdx := strings.LastIndex(fileRange, ":")
 	if colonIdx < 0 {
@@ -165,7 +165,7 @@ func parseCoverageLine(line string) (CoverageBlock, error) {
 	return block, nil
 }
 
-// parseLineCol парсит "line.col" строку.
+// parseLineCol parses a "line.col" string.
 func parseLineCol(s string) (int, int, error) {
 	dotIdx := strings.Index(s, ".")
 	if dotIdx < 0 {
@@ -185,13 +185,13 @@ func parseLineCol(s string) (int, int, error) {
 	return line, col, nil
 }
 
-// CoveredLines возвращает множество номеров строк, покрытых тестами,
-// для указанного файла.
+// CoveredLines returns a set of line numbers covered by tests
+// for the specified file.
 func CoveredLines(blocks []CoverageBlock, fileSuffix string) map[int]bool {
 	covered := make(map[int]bool)
 
 	for _, b := range blocks {
-		// Сопоставляем по суффиксу пути (coverage profile содержит полный module path)
+		// Match by path suffix (coverage profile contains full module path)
 		if !strings.HasSuffix(b.File, fileSuffix) {
 			continue
 		}
@@ -199,7 +199,7 @@ func CoveredLines(blocks []CoverageBlock, fileSuffix string) map[int]bool {
 			continue
 		}
 
-		// Все строки от StartLine до EndLine считаются покрытыми
+		// All lines from StartLine to EndLine are considered covered
 		for line := b.StartLine; line <= b.EndLine; line++ {
 			covered[line] = true
 		}
@@ -208,10 +208,10 @@ func CoveredLines(blocks []CoverageBlock, fileSuffix string) map[int]bool {
 	return covered
 }
 
-// CalculateDiffCoverage вычисляет diff coverage для одного файла.
-// changedLines — номера изменённых строк из diff.
-// blocks — все блоки покрытия из go test -coverprofile.
-// fileSuffix — суффикс пути файла для сопоставления с coverage profile.
+// CalculateDiffCoverage computes diff coverage for a single file.
+// changedLines are the changed line numbers from diff.
+// blocks are all coverage blocks from go test -coverprofile.
+// fileSuffix is the file path suffix for matching against the coverage profile.
 func CalculateDiffCoverage(fileSuffix string, changedLines []int, blocks []CoverageBlock) DiffCoverageResult {
 	result := DiffCoverageResult{
 		FilePath:     fileSuffix,
@@ -238,7 +238,7 @@ func CalculateDiffCoverage(fileSuffix string, changedLines []int, blocks []Cover
 	return result
 }
 
-// CalculateTotal агрегирует результаты по всем файлам.
+// CalculateTotal aggregates results across all files.
 func CalculateTotal(results []DiffCoverageResult) TotalResult {
 	total := TotalResult{
 		Files: results,

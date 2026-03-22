@@ -8,7 +8,7 @@ import (
 
 func TestNormalizeBody_IgnoresComments(t *testing.T) {
 	body1 := `func Add(a, b int) int {
-	// сумма двух чисел
+	// sum of two numbers
 	return a + b
 }`
 	body2 := `func Add(a, b int) int {
@@ -297,7 +297,7 @@ func TestNormalizeString(t *testing.T) {
 
 // --- helpers ---
 
-// filterChangedWithBase — тестовая обёртка: вместо вызова git, принимает baseSrc напрямую.
+// filterChangedWithBase is a test wrapper: instead of calling git, it accepts baseSrc directly.
 func filterChangedWithBase(affectedFuncs []analyzer.FuncInfo, baseSrc string) *CompareResult {
 	result := &CompareResult{}
 

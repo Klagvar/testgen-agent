@@ -28,6 +28,9 @@ go.sum
 *.swp
 *.swo
 
+# Environment (secrets)
+.env
+
 # OS
 .DS_Store
 Thumbs.db

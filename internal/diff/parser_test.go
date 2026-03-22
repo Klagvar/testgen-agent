@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// Пример реального вывода git diff.
+// Example of real git diff output.
 const sampleDiff = `diff --git a/calc/calc.go b/calc/calc.go
 index 1234567..abcdefg 100644
 --- a/calc/calc.go
@@ -33,71 +33,71 @@ index 1234567..abcdefg 100644
 func TestParse_SingleFile(t *testing.T) {
 	files, err := Parse(sampleDiff)
 	if err != nil {
-		t.Fatalf("Parse вернул ошибку: %v", err)
+		t.Fatalf("Parse returned error: %v", err)
 	}
 
 	if len(files) != 1 {
-		t.Fatalf("ожидался 1 файл, получено %d", len(files))
+		t.Fatalf("expected 1 file, got %d", len(files))
 	}
 
 	file := files[0]
 
-	// Проверяем пути
+	// Check paths
 	if file.OldPath != "calc/calc.go" {
-		t.Errorf("OldPath = %q, ожидалось %q", file.OldPath, "calc/calc.go")
+		t.Errorf("OldPath = %q, expected %q", file.OldPath, "calc/calc.go")
 	}
 	if file.NewPath != "calc/calc.go" {
-		t.Errorf("NewPath = %q, ожидалось %q", file.NewPath, "calc/calc.go")
+		t.Errorf("NewPath = %q, expected %q", file.NewPath, "calc/calc.go")
 	}
 
-	// Проверяем количество хунков
+	// Check number of hunks
 	if len(file.Hunks) != 1 {
-		t.Fatalf("ожидался 1 хунк, получено %d", len(file.Hunks))
+		t.Fatalf("expected 1 hunk, got %d", len(file.Hunks))
 	}
 
 	hunk := file.Hunks[0]
 	if hunk.OldStart != 1 || hunk.OldCount != 8 {
-		t.Errorf("Old range = %d,%d, ожидалось 1,8", hunk.OldStart, hunk.OldCount)
+		t.Errorf("Old range = %d,%d, expected 1,8", hunk.OldStart, hunk.OldCount)
 	}
 	if hunk.NewStart != 1 || hunk.NewCount != 12 {
-		t.Errorf("New range = %d,%d, ожидалось 1,12", hunk.NewStart, hunk.NewCount)
+		t.Errorf("New range = %d,%d, expected 1,12", hunk.NewStart, hunk.NewCount)
 	}
 }
 
 func TestParse_ChangedLines(t *testing.T) {
 	files, err := Parse(sampleDiff)
 	if err != nil {
-		t.Fatalf("Parse вернул ошибку: %v", err)
+		t.Fatalf("Parse returned error: %v", err)
 	}
 
 	changed := files[0].ChangedLines()
 
-	// Добавленные строки: строки с + (новые номера в файле)
-	// +func Add(a, b int) (int, error) {       → строка 3
-	// +	if a < 0 || b < 0 {                   → строка 4
-	// +		return 0, fmt.Errorf(...)           → строка 5
-	// +	}                                      → строка 6
-	// +	return a + b, nil                      → строка 7
-	// (пустая строка +)                         → строка 12
-	// +func Multiply(a, b int) int {             → строка 13  (но с пустой +)
-	// и т.д.
+	// Added lines: lines with + (new line numbers in the file)
+	// +func Add(a, b int) (int, error) {       → line 3
+	// +	if a < 0 || b < 0 {                   → line 4
+	// +		return 0, fmt.Errorf(...)           → line 5
+	// +	}                                      → line 6
+	// +	return a + b, nil                      → line 7
+	// (empty line +)                           → line 12
+	// +func Multiply(a, b int) int {             → line 13  (but with blank +)
+	// etc.
 
 	if len(changed) == 0 {
-		t.Fatal("ChangedLines вернул пустой список")
+		t.Fatal("ChangedLines returned empty list")
 	}
 
-	t.Logf("Изменённые строки: %v", changed)
+	t.Logf("Changed lines: %v", changed)
 
-	// Проверяем что есть хотя бы несколько добавленных строк
+	// Check that there are at least a few added lines
 	if len(changed) < 5 {
-		t.Errorf("ожидалось >= 5 изменённых строк, получено %d", len(changed))
+		t.Errorf("expected >= 5 changed lines, got %d", len(changed))
 	}
 }
 
 func TestParse_LineTypes(t *testing.T) {
 	files, err := Parse(sampleDiff)
 	if err != nil {
-		t.Fatalf("Parse вернул ошибку: %v", err)
+		t.Fatalf("Parse returned error: %v", err)
 	}
 
 	hunk := files[0].Hunks[0]
@@ -114,16 +114,16 @@ func TestParse_LineTypes(t *testing.T) {
 		}
 	}
 
-	t.Logf("Строки: added=%d, deleted=%d, context=%d", added, deleted, context)
+	t.Logf("Lines: added=%d, deleted=%d, context=%d", added, deleted, context)
 
 	if added == 0 {
-		t.Error("нет добавленных строк")
+		t.Error("no added lines")
 	}
 	if deleted == 0 {
-		t.Error("нет удалённых строк")
+		t.Error("no deleted lines")
 	}
 	if context == 0 {
-		t.Error("нет контекстных строк")
+		t.Error("no context lines")
 	}
 }
 
@@ -154,34 +154,34 @@ index 3333333..4444444 100644
 func TestParse_MultipleFiles(t *testing.T) {
 	files, err := Parse(multiFileDiff)
 	if err != nil {
-		t.Fatalf("Parse вернул ошибку: %v", err)
+		t.Fatalf("Parse returned error: %v", err)
 	}
 
 	if len(files) != 2 {
-		t.Fatalf("ожидалось 2 файла, получено %d", len(files))
+		t.Fatalf("expected 2 files, got %d", len(files))
 	}
 
-	// Первый файл
+	// First file
 	if files[0].NewPath != "main.go" {
-		t.Errorf("файл 0: NewPath = %q, ожидалось %q", files[0].NewPath, "main.go")
+		t.Errorf("file 0: NewPath = %q, expected %q", files[0].NewPath, "main.go")
 	}
 	if len(files[0].Hunks) != 1 {
-		t.Errorf("файл 0: ожидался 1 хунк, получено %d", len(files[0].Hunks))
+		t.Errorf("file 0: expected 1 hunk, got %d", len(files[0].Hunks))
 	}
 
-	// Второй файл
+	// Second file
 	if files[1].NewPath != "utils/helper.go" {
-		t.Errorf("файл 1: NewPath = %q, ожидалось %q", files[1].NewPath, "utils/helper.go")
+		t.Errorf("file 1: NewPath = %q, expected %q", files[1].NewPath, "utils/helper.go")
 	}
 	if len(files[1].Hunks) != 1 {
-		t.Errorf("файл 1: ожидался 1 хунк, получено %d", len(files[1].Hunks))
+		t.Errorf("file 1: expected 1 hunk, got %d", len(files[1].Hunks))
 	}
 
-	// Проверяем changed lines второго файла
+	// Check changed lines of second file
 	changed := files[1].ChangedLines()
-	t.Logf("Изменённые строки в utils/helper.go: %v", changed)
+	t.Logf("Changed lines in utils/helper.go: %v", changed)
 	if len(changed) != 3 {
-		t.Errorf("ожидалось 3 изменённых строки, получено %d", len(changed))
+		t.Errorf("expected 3 changed lines, got %d", len(changed))
 	}
 }
 
@@ -195,19 +195,19 @@ func TestParseHunkHeader(t *testing.T) {
 		newCount int
 	}{
 		{
-			name:     "обычный заголовок",
+			name:     "normal header",
 			header:   "@@ -1,5 +1,7 @@",
 			oldStart: 1, oldCount: 5,
 			newStart: 1, newCount: 7,
 		},
 		{
-			name:     "с именем функции",
+			name:     "with function name",
 			header:   "@@ -10,3 +10,5 @@ func Calculate()",
 			oldStart: 10, oldCount: 3,
 			newStart: 10, newCount: 5,
 		},
 		{
-			name:     "одна строка (без count)",
+			name:     "single line (no count)",
 			header:   "@@ -1 +1 @@",
 			oldStart: 1, oldCount: 1,
 			newStart: 1, newCount: 1,
@@ -218,13 +218,13 @@ func TestParseHunkHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			oldStart, oldCount, newStart, newCount, err := parseHunkHeader(tt.header)
 			if err != nil {
-				t.Fatalf("ошибка: %v", err)
+				t.Fatalf("error: %v", err)
 			}
 			if oldStart != tt.oldStart || oldCount != tt.oldCount {
-				t.Errorf("old = %d,%d, ожидалось %d,%d", oldStart, oldCount, tt.oldStart, tt.oldCount)
+				t.Errorf("old = %d,%d, expected %d,%d", oldStart, oldCount, tt.oldStart, tt.oldCount)
 			}
 			if newStart != tt.newStart || newCount != tt.newCount {
-				t.Errorf("new = %d,%d, ожидалось %d,%d", newStart, newCount, tt.newStart, tt.newCount)
+				t.Errorf("new = %d,%d, expected %d,%d", newStart, newCount, tt.newStart, tt.newCount)
 			}
 		})
 	}

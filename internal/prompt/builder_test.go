@@ -18,7 +18,7 @@ func sampleRequest() TestGenRequest {
 				Signature:  "func Add(a int, b int) (int, error)",
 				Params:     []analyzer.Param{{Name: "a", Type: "int"}, {Name: "b", Type: "int"}},
 				Returns:    []string{"int", "error"},
-				DocComment: "Add складывает два числа. Поддерживает проверку на переполнение.\n",
+				DocComment: "Add sums two numbers. Supports overflow checking.\n",
 				Body: `func Add(a, b int) (int, error) {
 	result := a + b
 	if (b > 0 && result < a) || (b < 0 && result > a) {
@@ -34,7 +34,7 @@ func sampleRequest() TestGenRequest {
 				Signature:  "func Multiply(a int, b int) int",
 				Params:     []analyzer.Param{{Name: "a", Type: "int"}, {Name: "b", Type: "int"}},
 				Returns:    []string{"int"},
-				DocComment: "Multiply умножает два числа.\n",
+				DocComment: "Multiply multiplies two numbers.\n",
 				Body: `func Multiply(a, b int) int {
 	return a * b
 }`,
@@ -138,10 +138,10 @@ func TestBuildUserPrompt_ContainsDocComment(t *testing.T) {
 	req := sampleRequest()
 	prompt := BuildUserPrompt(req)
 
-	if !strings.Contains(prompt, "переполнение") {
+	if !strings.Contains(prompt, "overflow") {
 		t.Error("prompt does not contain Add documentation")
 	}
-	if !strings.Contains(prompt, "умножает") {
+	if !strings.Contains(prompt, "multiplies") {
 		t.Error("prompt does not contain Multiply documentation")
 	}
 }

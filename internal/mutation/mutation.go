@@ -1,6 +1,6 @@
-// Package mutation реализует мутационное тестирование:
-// внедряет мутации в исходный код, запускает тесты
-// и проверяет, обнаруживают ли тесты эти мутации.
+// Package mutation implements mutation testing:
+// injects mutations into source code, runs tests,
+// and checks whether the tests detect these mutations.
 //
 // Mutation Score = killed / total × 100%
 package mutation
@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-// MutationType — тип мутации.
+// MutationType represents a mutation type.
 type MutationType string
 
 const (
@@ -28,20 +28,20 @@ const (
 	MutCondNegate  MutationType = "cond_negate" // if cond → if !cond
 )
 
-// Mutant — одна мутация.
+// Mutant represents a single mutation.
 type Mutant struct {
-	ID          int          // порядковый номер
-	Type        MutationType // тип мутации
-	File        string       // файл
-	Line        int          // строка
-	Original    string       // оригинальный оператор / выражение
-	Replacement string       // мутированный вариант
-	FuncName    string       // функция, в которой мутация
-	Killed      bool         // true = тесты упали (мутант убит)
-	Error       string       // ошибка выполнения (если есть)
+	ID          int          // sequential number
+	Type        MutationType // mutation type
+	File        string       // file
+	Line        int          // line
+	Original    string       // original operator/expression
+	Replacement string       // mutated variant
+	FuncName    string       // function containing the mutation
+	Killed      bool         // true = tests failed (mutant killed)
+	Error       string       // execution error (if any)
 }
 
-// Result — результат мутационного тестирования.
+// Result holds the mutation testing result.
 type Result struct {
 	Mutants       []Mutant
 	Total         int
@@ -51,18 +51,18 @@ type Result struct {
 	MutationScore float64 // killed / (total - errors) * 100
 }
 
-// RunMutationTests проводит мутационное тестирование.
-// sourceFile — путь к .go файлу, funcNames — функции для мутирования (nil = все),
-// moduleRoot — корень модуля (где go.mod).
+// RunMutationTests performs mutation testing.
+// sourceFile is the path to a .go file, funcNames are functions to mutate (nil = all),
+// moduleRoot is the module root (where go.mod is).
 func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) (*Result, error) {
-	// Читаем оригинальный файл
+	// Read the original file
 	originalBytes, err := os.ReadFile(sourceFile)
 	if err != nil {
 		return nil, fmt.Errorf("read source: %w", err)
 	}
 	original := string(originalBytes)
 
-	// Генерируем мутанты
+	// Generate mutants
 	mutants, err := GenerateMutants(original, sourceFile, funcNames)
 	if err != nil {
 		return nil, fmt.Errorf("generate mutants: %w", err)
@@ -77,7 +77,7 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 	for i := range mutants {
 		m := &mutants[i]
 
-		// Применяем мутацию
+		// Apply mutation
 		mutatedCode, err := applyMutant(original, m)
 		if err != nil {
 			m.Error = err.Error()
@@ -85,14 +85,14 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 			continue
 		}
 
-		// Записываем мутированный файл
+		// Write the mutated file
 		if err := os.WriteFile(sourceFile, []byte(mutatedCode), 0644); err != nil {
 			m.Error = err.Error()
 			result.Errors++
 			continue
 		}
 
-		// Запускаем тесты
+		// Run tests
 		killed := runTestsForMutant(moduleRoot, pkgDir)
 		m.Killed = killed
 
@@ -102,7 +102,7 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 			result.Survived++
 		}
 
-		// Восстанавливаем оригинал
+		// Restore original
 		os.WriteFile(sourceFile, originalBytes, 0644)
 	}
 
@@ -116,7 +116,7 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 	return result, nil
 }
 
-// GenerateMutants создаёт список потенциальных мутаций для файла.
+// GenerateMutants creates a list of potential mutations for a file.
 func GenerateMutants(src, filename string, funcNames []string) ([]Mutant, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
@@ -138,12 +138,12 @@ func GenerateMutants(src, filename string, funcNames []string) ([]Mutant, error)
 			continue
 		}
 
-		// Фильтр по именам функций
+		// Filter by function names
 		if len(funcFilter) > 0 && !funcFilter[funcDecl.Name.Name] {
 			continue
 		}
 
-		// Обход AST для поиска мутируемых узлов
+		// Walk AST to find mutable nodes
 		ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
 			if n == nil {
 				return false
@@ -176,19 +176,19 @@ func GenerateMutants(src, filename string, funcNames []string) ([]Mutant, error)
 	return mutants, nil
 }
 
-// binaryMutations генерирует мутации для бинарных операторов.
+// binaryMutations generates mutations for binary operators.
 func binaryMutations(expr *ast.BinaryExpr, fset *token.FileSet, funcName string) []Mutant {
 	var mutants []Mutant
 	line := fset.Position(expr.OpPos).Line
 
 	replacements := map[token.Token]token.Token{
-		// Арифметические
+		// Arithmetic
 		token.ADD: token.SUB,
 		token.SUB: token.ADD,
 		token.MUL: token.QUO,
 		token.QUO: token.MUL,
 
-		// Сравнения
+		// Comparisons
 		token.LSS: token.LEQ,
 		token.LEQ: token.LSS,
 		token.GTR: token.GEQ,
@@ -196,7 +196,7 @@ func binaryMutations(expr *ast.BinaryExpr, fset *token.FileSet, funcName string)
 		token.EQL: token.NEQ,
 		token.NEQ: token.EQL,
 
-		// Логические
+		// Logical
 		token.LAND: token.LOR,
 		token.LOR:  token.LAND,
 	}
@@ -215,12 +215,12 @@ func binaryMutations(expr *ast.BinaryExpr, fset *token.FileSet, funcName string)
 	return mutants
 }
 
-// unaryMutations генерирует мутации для унарных операторов.
+// unaryMutations generates mutations for unary operators.
 func unaryMutations(expr *ast.UnaryExpr, fset *token.FileSet, funcName string) []Mutant {
 	var mutants []Mutant
 	line := fset.Position(expr.OpPos).Line
 
-	// !x → x (удаление отрицания)
+	// !x → x (negation removal)
 	if expr.Op == token.NOT {
 		mutants = append(mutants, Mutant{
 			Type:        MutCondNegate,
@@ -234,7 +234,7 @@ func unaryMutations(expr *ast.UnaryExpr, fset *token.FileSet, funcName string) [
 	return mutants
 }
 
-// classifyBinaryOp определяет тип мутации по оператору.
+// classifyBinaryOp classifies the mutation type by operator.
 func classifyBinaryOp(op token.Token) MutationType {
 	switch op {
 	case token.ADD, token.SUB, token.MUL, token.QUO:
@@ -248,7 +248,7 @@ func classifyBinaryOp(op token.Token) MutationType {
 	}
 }
 
-// applyMutant применяет мутацию к исходному коду через AST-манипуляцию.
+// applyMutant applies a mutation to source code via AST manipulation.
 func applyMutant(src string, m *Mutant) (string, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, m.File, src, parser.ParseComments)
@@ -267,7 +267,7 @@ func applyMutant(src string, m *Mutant) (string, error) {
 		case *ast.BinaryExpr:
 			line := fset.Position(node.OpPos).Line
 			if line == m.Line && node.Op.String() == m.Original {
-				// Заменяем оператор
+				// Replace operator
 				newOp := stringToToken(m.Replacement)
 				if newOp != token.ILLEGAL {
 					node.Op = newOp
@@ -278,8 +278,8 @@ func applyMutant(src string, m *Mutant) (string, error) {
 		case *ast.UnaryExpr:
 			line := fset.Position(node.OpPos).Line
 			if line == m.Line && m.Type == MutCondNegate && node.Op == token.NOT {
-				// Для !x → x нужно заменить UnaryExpr на его операнд
-				// Это сложнее через AST, поэтому используем текстовую замену
+				// For !x → x we need to replace UnaryExpr with its operand
+				// This is harder via AST, so we use text replacement
 				applied = true
 			}
 		}
@@ -287,12 +287,12 @@ func applyMutant(src string, m *Mutant) (string, error) {
 		return true
 	})
 
-	// Для случая с удалением NOT — используем текстовую замену
+	// For NOT removal — use text replacement
 	if m.Type == MutCondNegate && m.Replacement == "" {
 		lines := strings.Split(src, "\n")
 		if m.Line >= 1 && m.Line <= len(lines) {
 			lineContent := lines[m.Line-1]
-			// Заменяем первый "!" перед выражением
+			// Replace the first "!" before the expression
 			mutated := strings.Replace(lineContent, "!", "", 1)
 			lines[m.Line-1] = mutated
 			return strings.Join(lines, "\n"), nil
@@ -311,7 +311,7 @@ func applyMutant(src string, m *Mutant) (string, error) {
 	return buf.String(), nil
 }
 
-// stringToToken конвертирует строку оператора в token.Token.
+// stringToToken converts an operator string to token.Token.
 func stringToToken(s string) token.Token {
 	tokenMap := map[string]token.Token{
 		"+":  token.ADD,
@@ -333,12 +333,12 @@ func stringToToken(s string) token.Token {
 	return token.ILLEGAL
 }
 
-// runTestsForMutant запускает go test и возвращает true если тесты упали (мутант убит).
+// runTestsForMutant runs go test and returns true if tests failed (mutant killed).
 func runTestsForMutant(moduleRoot, pkgDir string) bool {
 	cmd := exec.Command("go", "test", "-count=1", "-timeout=30s", "./...")
 	cmd.Dir = moduleRoot
 
-	// Если pkgDir отличается от moduleRoot, используем относительный путь
+	// If pkgDir differs from moduleRoot, use relative path
 	if pkgDir != moduleRoot {
 		rel, err := filepath.Rel(moduleRoot, pkgDir)
 		if err == nil {
@@ -350,16 +350,16 @@ func runTestsForMutant(moduleRoot, pkgDir string) bool {
 	output, err := cmd.CombinedOutput()
 	_ = output
 
-	// Если тесты упали (exit code != 0) → мутант убит
+	// If tests failed (exit code != 0) → mutant killed
 	if err != nil {
 		return true
 	}
 
-	// Тесты прошли → мутант выжил (тесты слабые)
+	// Tests passed → mutant survived (tests are weak)
 	return false
 }
 
-// FormatResult форматирует результат в Markdown-таблицу.
+// FormatResult formats the result as a Markdown table.
 func FormatResult(r *Result) string {
 	var sb strings.Builder
 

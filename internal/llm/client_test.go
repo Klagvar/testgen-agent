@@ -16,22 +16,22 @@ func TestCleanCodeResponse(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "чистый код",
+			name:  "clean code",
 			input: "package calc\n\nfunc TestAdd(t *testing.T) {}",
 			want:  "package calc\n\nfunc TestAdd(t *testing.T) {}",
 		},
 		{
-			name:  "обёртка ```go",
+			name:  "wrapped in ```go",
 			input: "```go\npackage calc\n\nfunc TestAdd(t *testing.T) {}\n```",
 			want:  "package calc\n\nfunc TestAdd(t *testing.T) {}",
 		},
 		{
-			name:  "обёртка ```",
+			name:  "wrapped in ```",
 			input: "```\npackage calc\n\nfunc TestAdd(t *testing.T) {}\n```",
 			want:  "package calc\n\nfunc TestAdd(t *testing.T) {}",
 		},
 		{
-			name:  "с пробелами вокруг",
+			name:  "with spaces around",
 			input: "  \n```go\npackage calc\n```\n  ",
 			want:  "package calc",
 		},
@@ -51,10 +51,10 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
 	if cfg.BaseURL == "" {
-		t.Error("BaseURL пуст")
+		t.Error("BaseURL is empty")
 	}
 	if cfg.Model == "" {
-		t.Error("Model пуст")
+		t.Error("Model is empty")
 	}
 	if cfg.Timeout == 0 {
 		t.Error("Timeout = 0")
@@ -70,17 +70,17 @@ func TestNewClient(t *testing.T) {
 
 	client := NewClient(cfg)
 	if client == nil {
-		t.Fatal("NewClient вернул nil")
+		t.Fatal("NewClient returned nil")
 	}
 	if client.config.Timeout != 300 {
-		t.Errorf("Timeout = %d, ожидалось 300", client.config.Timeout)
+		t.Errorf("Timeout = %d, expected 300", client.config.Timeout)
 	}
 }
 
 func TestGenerate_MockServer(t *testing.T) {
-	// Поднимаем фейковый сервер, имитирующий OpenAI API
+	// Start a fake server simulating the OpenAI API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Проверяем заголовки
+		// Check headers
 		if r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("Content-Type = %q", r.Header.Get("Content-Type"))
 		}
@@ -88,19 +88,19 @@ func TestGenerate_MockServer(t *testing.T) {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 
-		// Проверяем тело запроса
+		// Check request body
 		var reqBody chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-			t.Errorf("ошибка декодирования запроса: %v", err)
+			t.Errorf("error decoding request: %v", err)
 		}
 		if reqBody.Model != "test-model" {
-			t.Errorf("Model = %q, ожидалось test-model", reqBody.Model)
+			t.Errorf("Model = %q, expected test-model", reqBody.Model)
 		}
 		if len(reqBody.Messages) != 2 {
-			t.Errorf("Messages = %d, ожидалось 2", len(reqBody.Messages))
+			t.Errorf("Messages = %d, expected 2", len(reqBody.Messages))
 		}
 
-		// Возвращаем ответ
+		// Return response
 		resp := chatResponse{
 			Choices: []struct {
 				Message struct {
@@ -147,22 +147,22 @@ func TestGenerate_MockServer(t *testing.T) {
 
 	result, err := client.Generate(messages)
 	if err != nil {
-		t.Fatalf("Generate вернул ошибку: %v", err)
+		t.Fatalf("Generate returned error: %v", err)
 	}
 
-	// Код должен быть очищен от markdown-обёрток
+	// Code should be cleaned of markdown wrappers
 	if result.Content == "" {
-		t.Error("Content пуст")
+		t.Error("Content is empty")
 	}
 	if result.Content[0:7] != "package" {
-		t.Errorf("Content должен начинаться с 'package', начинается с %q", result.Content[0:7])
+		t.Errorf("Content should start with 'package', starts with %q", result.Content[0:7])
 	}
 
-	t.Logf("Сгенерированный код:\n%s", result.Content)
-	t.Logf("Токены: prompt=%d, completion=%d, total=%d", result.PromptTokens, result.CompletionTokens, result.TotalTokens)
+	t.Logf("Generated code:\n%s", result.Content)
+	t.Logf("Tokens: prompt=%d, completion=%d, total=%d", result.PromptTokens, result.CompletionTokens, result.TotalTokens)
 
 	if result.TotalTokens != 150 {
-		t.Errorf("TotalTokens = %d, ожидалось 150", result.TotalTokens)
+		t.Errorf("TotalTokens = %d, expected 150", result.TotalTokens)
 	}
 }
 
@@ -181,7 +181,7 @@ func TestGenerate_APIError(t *testing.T) {
 
 	_, err := client.Generate([]prompt.Message{{Role: "user", Content: "hello"}})
 	if err == nil {
-		t.Fatal("ожидалась ошибка при 401")
+		t.Fatal("expected error on 401")
 	}
-	t.Logf("Ожидаемая ошибка: %v", err)
+	t.Logf("Expected error: %v", err)
 }
