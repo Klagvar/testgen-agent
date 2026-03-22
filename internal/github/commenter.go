@@ -233,8 +233,25 @@ type commentRequest struct {
 	Body string `json:"body"`
 }
 
-// postComment sends a new comment to a PR via the GitHub API.
+// postComment sends a new comment to a PR via the GitHub API with retry.
 func (c *Commenter) postComment(body string) error {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		lastErr = c.doPostComment(body)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < maxRetries {
+			backoff := time.Duration(attempt) * 2 * time.Second
+			time.Sleep(backoff)
+		}
+	}
+	return lastErr
+}
+
+func (c *Commenter) doPostComment(body string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.apiBase, c.owner, c.repo, c.prNum)
 
 	payload, err := json.Marshal(commentRequest{Body: body})
