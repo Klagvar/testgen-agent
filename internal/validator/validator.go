@@ -84,7 +84,8 @@ func findModuleRoot(dir string) string {
 
 // Validate checks a generated test file.
 // repoDir is the repository path, testFile is the test file path.
-func Validate(repoDir string, testFile string) *Result {
+// Optional timeoutSec overrides the default 30s test timeout.
+func Validate(repoDir string, testFile string, timeoutSec ...int) *Result {
 	result := &Result{}
 	start := time.Now()
 
@@ -113,7 +114,11 @@ func Validate(repoDir string, testFile string) *Result {
 	result.CompileOK = true
 
 	// Step 2: Run tests
-	testOutput, testErr := runGoTest(moduleRoot, testDir)
+	timeout := 30
+	if len(timeoutSec) > 0 && timeoutSec[0] > 0 {
+		timeout = timeoutSec[0]
+	}
+	testOutput, testErr := runGoTest(moduleRoot, testDir, timeout)
 	result.TestOutput = testOutput
 	result.Duration = time.Since(start)
 
@@ -268,7 +273,7 @@ func runGoCommand(moduleRoot, pkgDir, command string) string {
 }
 
 // runGoTest runs go test and returns output and error.
-func runGoTest(moduleRoot, pkgDir string) (output string, errMsg string) {
+func runGoTest(moduleRoot, pkgDir string, timeoutSec int) (output string, errMsg string) {
 	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
 		relPkg = "."
@@ -278,7 +283,7 @@ func runGoTest(moduleRoot, pkgDir string) (output string, errMsg string) {
 		pkgPath = "."
 	}
 
-	cmd := exec.Command("go", "test", "-v", "-count=1", "-timeout", "30s", pkgPath)
+	cmd := exec.Command("go", "test", "-v", "-count=1", "-timeout", fmt.Sprintf("%ds", timeoutSec), pkgPath)
 	cmd.Dir = moduleRoot
 
 	out, err := cmd.CombinedOutput()

@@ -16,12 +16,16 @@ import (
 type PatternKind string
 
 const (
-	PatternHTTPHandler PatternKind = "http_handler"
-	PatternContext     PatternKind = "context"
-	PatternTimeNow    PatternKind = "time_now"
-	PatternEnvVar     PatternKind = "env_var"
-	PatternFileIO     PatternKind = "file_io"
-	PatternDatabase   PatternKind = "database"
+	PatternHTTPHandler  PatternKind = "http_handler"
+	PatternContext      PatternKind = "context"
+	PatternTimeNow     PatternKind = "time_now"
+	PatternEnvVar      PatternKind = "env_var"
+	PatternFileIO      PatternKind = "file_io"
+	PatternDatabase    PatternKind = "database"
+	PatternErrorsWrap  PatternKind = "errors_wrap"
+	PatternHTTPClient  PatternKind = "http_client"
+	PatternJSON        PatternKind = "json_encoding"
+	PatternIOReadWrite PatternKind = "io_readwrite"
 )
 
 // PatternHint is a single piece of guidance injected into the LLM prompt.
@@ -51,6 +55,18 @@ func Detect(fn analyzer.FuncInfo, fileImports []string, allTypes []analyzer.Type
 		hints = append(hints, *h)
 	}
 	if h := detectDatabase(fn, allTypes); h != nil {
+		hints = append(hints, *h)
+	}
+	if h := detectErrorsWrap(fn); h != nil {
+		hints = append(hints, *h)
+	}
+	if h := detectHTTPClient(fn, fileImports); h != nil {
+		hints = append(hints, *h)
+	}
+	if h := detectJSON(fn, fileImports); h != nil {
+		hints = append(hints, *h)
+	}
+	if h := detectIOReadWrite(fn, fileImports); h != nil {
 		hints = append(hints, *h)
 	}
 
@@ -302,6 +318,118 @@ Preferred approach:
    (input validation, error path logic, etc.) without calling the database
 
 Do NOT attempt to connect to a real database in unit tests.`,
+	}
+}
+
+func detectErrorsWrap(fn analyzer.FuncInfo) *PatternHint {
+	hasErrorsIs := bodyContainsCall(fn.Body, "errors", "Is")
+	hasErrorsAs := bodyContainsCall(fn.Body, "errors", "As")
+	hasErrorsNew := bodyContainsCall(fn.Body, "errors", "New")
+	hasErrorf := bodyContainsCall(fn.Body, "fmt", "Errorf") && bodyContains(fn.Body, "%w")
+
+	if !hasErrorsIs && !hasErrorsAs && !hasErrorsNew && !hasErrorf {
+		return nil
+	}
+	return &PatternHint{
+		Kind:    PatternErrorsWrap,
+		Summary: "Uses error wrapping/inspection",
+		Guide: `This function uses error wrapping or inspection (errors.Is/As/New, fmt.Errorf with %w).
+In tests:
+- Use errors.Is() and errors.As() for error comparison — do NOT use == for wrapped errors
+- Test that wrapped errors can be unwrapped to the original sentinel
+- When testing fmt.Errorf with %w, verify the error chain with errors.Is()
+- Test both the error message and the underlying error type`,
+	}
+}
+
+func detectHTTPClient(fn analyzer.FuncInfo, imports []string) *PatternHint {
+	if !containsImport(imports, "net/http") {
+		return nil
+	}
+	calls := []struct{ pkg, fn string }{
+		{"http", "Get"}, {"http", "Post"}, {"http", "Do"}, {"http", "NewRequest"},
+		{"client", "Do"}, {"client", "Get"},
+	}
+	found := false
+	for _, c := range calls {
+		if bodyContainsCall(fn.Body, c.pkg, c.fn) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &PatternHint{
+		Kind:    PatternHTTPClient,
+		Summary: "Makes outgoing HTTP requests",
+		Guide: `This function makes outgoing HTTP requests (http.Get/Post/Do/NewRequest).
+In tests:
+- Use httptest.NewServer to create a fake server that returns controlled responses
+- Do NOT make real HTTP requests to external services
+- Test different response status codes (200, 400, 500)
+- Test network errors by shutting down the test server before the call
+- Replace the base URL with the test server URL`,
+	}
+}
+
+func detectJSON(fn analyzer.FuncInfo, imports []string) *PatternHint {
+	if !containsImport(imports, "encoding/json") {
+		return nil
+	}
+	calls := []struct{ pkg, fn string }{
+		{"json", "Marshal"}, {"json", "Unmarshal"},
+		{"json", "NewEncoder"}, {"json", "NewDecoder"},
+	}
+	found := false
+	for _, c := range calls {
+		if bodyContainsCall(fn.Body, c.pkg, c.fn) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &PatternHint{
+		Kind:    PatternJSON,
+		Summary: "Uses JSON encoding/decoding",
+		Guide: `This function uses JSON encoding or decoding (json.Marshal/Unmarshal/NewEncoder/NewDecoder).
+In tests:
+- Test with valid and invalid JSON input
+- Check struct tags are respected (field names, omitempty)
+- Test boundary values: nil, empty struct, nested objects
+- For Unmarshal: test malformed JSON, missing fields, extra fields
+- For Marshal: verify the output matches expected JSON structure`,
+	}
+}
+
+func detectIOReadWrite(fn analyzer.FuncInfo, imports []string) *PatternHint {
+	if !containsImport(imports, "io") {
+		return nil
+	}
+	hasIOCall := bodyContainsCall(fn.Body, "io", "ReadAll") ||
+		bodyContainsCall(fn.Body, "io", "Copy")
+	hasIOParam := false
+	for _, p := range fn.Params {
+		if p.Type == "io.Reader" || p.Type == "io.Writer" {
+			hasIOParam = true
+			break
+		}
+	}
+	if !hasIOCall && !hasIOParam {
+		return nil
+	}
+	return &PatternHint{
+		Kind:    PatternIOReadWrite,
+		Summary: "Uses io.Reader/Writer or io utilities",
+		Guide: `This function uses io.Reader, io.Writer, or io utilities (io.ReadAll, io.Copy).
+In tests:
+- Use strings.NewReader("test data") to create an io.Reader
+- Use &bytes.Buffer{} to create an io.Writer
+- Test with empty input (strings.NewReader(""))
+- Test with large input to verify no truncation or buffer issues
+- For io.Copy: test that all bytes are transferred correctly`,
 	}
 }
 

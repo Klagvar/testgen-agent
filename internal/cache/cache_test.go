@@ -75,8 +75,16 @@ func TestComputeHash_ChangesOnTypeDep(t *testing.T) {
 
 func TestKey(t *testing.T) {
 	key := Key("internal/calc/calc.go", "Add")
-	if key != "calc.go::Add" {
-		t.Errorf("Key = %q, want 'calc.go::Add'", key)
+	if key != "internal/calc/calc.go::Add" {
+		t.Errorf("Key = %q, want 'internal/calc/calc.go::Add'", key)
+	}
+}
+
+func TestKey_NoDuplicateForSameBaseName(t *testing.T) {
+	k1 := Key("pkg/a/utils.go", "Parse")
+	k2 := Key("pkg/b/utils.go", "Parse")
+	if k1 == k2 {
+		t.Errorf("keys should differ for different paths: %q == %q", k1, k2)
 	}
 }
 
@@ -153,18 +161,18 @@ func TestCache_Lookup(t *testing.T) {
 func TestCache_Invalidate(t *testing.T) {
 	c := &Cache{Entries: make(map[string]FuncEntry)}
 
-	c.Put("calc.go::Add", FuncEntry{Hash: "a"})
-	c.Put("calc.go::Sub", FuncEntry{Hash: "b"})
-	c.Put("utils.go::Helper", FuncEntry{Hash: "c"})
+	c.Put("pkg/calc/calc.go::Add", FuncEntry{Hash: "a"})
+	c.Put("pkg/calc/calc.go::Sub", FuncEntry{Hash: "b"})
+	c.Put("pkg/utils/utils.go::Helper", FuncEntry{Hash: "c"})
 
-	c.Invalidate("calc.go")
+	c.Invalidate("pkg/calc/calc.go")
 
 	if len(c.Entries) != 1 {
 		t.Errorf("after invalidate: %d entries, want 1", len(c.Entries))
 	}
 
-	if _, ok := c.Entries["utils.go::Helper"]; !ok {
-		t.Error("utils.go::Helper should survive invalidation")
+	if _, ok := c.Entries["pkg/utils/utils.go::Helper"]; !ok {
+		t.Error("pkg/utils/utils.go::Helper should survive invalidation")
 	}
 }
 

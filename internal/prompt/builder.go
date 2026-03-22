@@ -114,6 +114,7 @@ type TestGenRequest struct {
 	RaceDetection    bool                         // run with -race flag
 	PatternHints     map[string][]patterns.PatternHint  // funcName → detected patterns
 	MockCode         string                       // pre-generated mock code for interfaces
+	Implementors     map[string][]string          // interface name → implementing type names
 }
 
 // BuildSystemPrompt builds the system prompt — instructions for the LLM.
@@ -198,6 +199,21 @@ func BuildUserPrompt(req TestGenRequest) string {
 				sb.WriteString(ti.Source)
 				sb.WriteString("\n```\n\n")
 			}
+			if hasJSONOrDBPattern(req.PatternHints) && ti.Kind == "struct" {
+				var taggedFields []string
+				for _, f := range ti.Fields {
+					if f.Tag != "" {
+						taggedFields = append(taggedFields, fmt.Sprintf("- `%s` → %s", f.Name, f.Tag))
+					}
+				}
+				if len(taggedFields) > 0 {
+					sb.WriteString("**Struct Tags (important for JSON/DB serialization):**\n")
+					for _, tf := range taggedFields {
+						sb.WriteString(tf + "\n")
+					}
+					sb.WriteString("\n")
+				}
+			}
 			if ti.Kind == "interface" && len(ti.Methods) > 0 {
 				sb.WriteString("**Methods:**\n")
 				for _, m := range ti.Methods {
@@ -215,10 +231,15 @@ func BuildUserPrompt(req TestGenRequest) string {
 						ti.Name, m.Name, m.Signature,
 						m.Name, extractCallArgs(m.Signature)))
 				}
-				sb.WriteString("```\n\n")
+			sb.WriteString("```\n\n")
+			if req.Implementors != nil {
+				if impls, ok := req.Implementors[ti.Name]; ok && len(impls) > 0 {
+					sb.WriteString(fmt.Sprintf("**Implemented by:** %s — consider using these real types in tests instead of mocks.\n\n", strings.Join(impls, ", ")))
+				}
 			}
 		}
 	}
+}
 
 	// Pre-generated mock implementations
 	if req.MockCode != "" {
@@ -358,8 +379,19 @@ func extractCallArgs(sig string) string {
 	return "(" + strings.Join(args, ", ") + ")"
 }
 
-// analyzeBranches performs a simple branch analysis of the function body for LLM hints.
-func analyzeBranches(body string) []string {
+func hasJSONOrDBPattern(hints map[string][]patterns.PatternHint) bool {
+	for _, hs := range hints {
+		for _, h := range hs {
+			if h.Kind == patterns.PatternJSON || h.Kind == patterns.PatternDatabase {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// analyzeBranchesTextFallback is the legacy line-based branch analysis used when AST parsing fails.
+func analyzeBranchesTextFallback(body string) []string {
 	var branches []string
 
 	lines := strings.Split(body, "\n")
@@ -390,6 +422,140 @@ func analyzeBranches(body string) []string {
 	return branches
 }
 
+func srcSlice(src string, fset *token.FileSet, n ast.Node) string {
+	if n == nil {
+		return ""
+	}
+	start := fset.Position(n.Pos()).Offset
+	end := fset.Position(n.End()).Offset
+	if start < 0 || end > len(src) || start >= end {
+		return ""
+	}
+	return strings.TrimSpace(src[start:end])
+}
+
+func isErrNilCheck(e *ast.BinaryExpr) bool {
+	if e.Op != token.NEQ {
+		return false
+	}
+	errAndNil := func(x, y ast.Expr) bool {
+		xid, xok := x.(*ast.Ident)
+		yid, yok := y.(*ast.Ident)
+		return xok && yok && xid.Name == "err" && yid.Name == "nil"
+	}
+	return errAndNil(e.X, e.Y) || errAndNil(e.Y, e.X)
+}
+
+func markElseIfChain(ifs *ast.IfStmt, elseIfSet map[*ast.IfStmt]bool) {
+	for e := ifs.Else; e != nil; {
+		inner, ok := e.(*ast.IfStmt)
+		if !ok {
+			break
+		}
+		elseIfSet[inner] = true
+		e = inner.Else
+	}
+}
+
+// analyzeBranches performs branch analysis of the function body for LLM hints using the Go AST.
+func analyzeBranches(body string) []string {
+	wrapped := "package _br\nfunc _br_() {\n" + body + "\n}"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "branches.go", wrapped, 0)
+	if err != nil {
+		return analyzeBranchesTextFallback(body)
+	}
+
+	var fnBody *ast.BlockStmt
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Name == nil || fd.Name.Name != "_br_" || fd.Body == nil {
+			continue
+		}
+		fnBody = fd.Body
+		break
+	}
+	if fnBody == nil {
+		return analyzeBranchesTextFallback(body)
+	}
+
+	elseIfSet := make(map[*ast.IfStmt]bool)
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if ifs, ok := n.(*ast.IfStmt); ok {
+			markElseIfChain(ifs, elseIfSet)
+		}
+		return true
+	})
+
+	var branches []string
+	seenErrCheck := make(map[token.Pos]struct{})
+	ast.Inspect(fnBody, func(n ast.Node) bool {
+		if n == nil {
+			return true
+		}
+		switch x := n.(type) {
+		case *ast.IfStmt:
+			if elseIfSet[x] {
+				return true
+			}
+			branches = append(branches, fmt.Sprintf("Condition: `%s`", srcSlice(wrapped, fset, x.Cond)))
+			for e := x.Else; e != nil; {
+				switch t := e.(type) {
+				case *ast.IfStmt:
+					branches = append(branches, fmt.Sprintf("Else-if: `%s`", srcSlice(wrapped, fset, t.Cond)))
+					e = t.Else
+				case *ast.BlockStmt:
+					branches = append(branches, "Else branch")
+					e = nil
+				default:
+					e = nil
+				}
+			}
+		case *ast.SwitchStmt:
+			branches = append(branches, "Switch statement")
+			for _, stmt := range x.Body.List {
+				cc, ok := stmt.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				if len(cc.List) == 0 {
+					branches = append(branches, "Default case")
+					continue
+				}
+				for _, expr := range cc.List {
+					branches = append(branches, fmt.Sprintf("Case: `%s`", srcSlice(wrapped, fset, expr)))
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			branches = append(branches, "Type switch")
+		case *ast.SelectStmt:
+			branches = append(branches, "Select statement")
+			for _, stmt := range x.Body.List {
+				cl, ok := stmt.(*ast.CommClause)
+				if !ok {
+					continue
+				}
+				if cl.Comm == nil {
+					branches = append(branches, "Default case")
+				} else {
+					branches = append(branches, fmt.Sprintf("Case: `%s`", srcSlice(wrapped, fset, cl.Comm)))
+				}
+			}
+		case *ast.BinaryExpr:
+			if isErrNilCheck(x) {
+				if _, ok := seenErrCheck[x.Pos()]; ok {
+					return true
+				}
+				seenErrCheck[x.Pos()] = struct{}{}
+				branches = append(branches, "Error check (err != nil)")
+			}
+		}
+		return true
+	})
+
+	return branches
+}
+
 // BuildMessages builds a message array for the LLM API.
 func BuildMessages(req TestGenRequest) []Message {
 	systemPrompt := BuildSystemPrompt()
@@ -405,16 +571,25 @@ func BuildMessages(req TestGenRequest) []Message {
 // BuildFixMessages builds messages for a retry attempt.
 // If failingTestNames is provided, only those functions are extracted from previousNewCode
 // to focus the LLM on just the failing tests. Otherwise, all new tests are sent.
-func BuildFixMessages(req TestGenRequest, previousNewCode string, errors string, attempt int, failingTestNames []string) []Message {
+func BuildFixMessages(req TestGenRequest, previousNewCode string, errors string, attempt int, failingTestNames []string, compactFeedback ...string) []Message {
 	codeToFix := previousNewCode
 	if len(failingTestNames) > 0 {
 		codeToFix = ExtractFuncSource(previousNewCode, failingTestNames)
 	}
 
-	fixPrompt := buildFixPrompt(errors, attempt)
+	var compact string
+	if len(compactFeedback) > 0 {
+		compact = compactFeedback[0]
+	}
+	fixPrompt := buildFixPrompt(errors, attempt, compact)
+
+	systemPrompt := BuildSystemPrompt()
+	if req.CustomPrompt != "" {
+		systemPrompt += "\n\n## Additional project-specific instructions:\n" + req.CustomPrompt
+	}
 
 	return []Message{
-		{Role: "system", Content: BuildSystemPrompt()},
+		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: BuildUserPrompt(req)},
 		{Role: "assistant", Content: codeToFix},
 		{Role: "user", Content: fixPrompt},
@@ -422,7 +597,8 @@ func BuildFixMessages(req TestGenRequest, previousNewCode string, errors string,
 }
 
 // buildFixPrompt builds a prompt with the error description for fixing.
-func buildFixPrompt(errors string, attempt int) string {
+// Optional compactFeedback provides a structured PASS/FAIL summary per test.
+func buildFixPrompt(errors string, attempt int, compactFeedback ...string) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Error in Generated Tests (attempt %d)\n\n", attempt))
@@ -430,6 +606,14 @@ func buildFixPrompt(errors string, attempt int) string {
 	sb.WriteString("```\n")
 	sb.WriteString(errors)
 	sb.WriteString("\n```\n\n")
+
+	if len(compactFeedback) > 0 && compactFeedback[0] != "" {
+		sb.WriteString("## Structured Test Results\n\n")
+		sb.WriteString("```\n")
+		sb.WriteString(compactFeedback[0])
+		sb.WriteString("```\n\n")
+		sb.WriteString("Focus on fixing ONLY the FAIL tests. PASS tests should remain unchanged.\n\n")
+	}
 
 	sb.WriteString("## Fix Instructions\n\n")
 	sb.WriteString("1. Carefully read the errors above.\n")
@@ -439,6 +623,7 @@ func buildFixPrompt(errors string, attempt int) string {
 	sb.WriteString("   - All imports are used and present\n")
 	sb.WriteString("   - All called functions exist with correct signatures\n")
 	sb.WriteString("   - Tests correctly verify expected behavior\n")
+	sb.WriteString("   - If you see \"expected X, got Y\" — trace the implementation to determine the CORRECT expected value\n")
 	sb.WriteString("4. Return ONLY the fixed new test functions (same format as before — valid Go file with package, imports, and ONLY the new test functions).\n")
 	sb.WriteString("5. Return ONLY code — no explanations, no markdown wrappers.\n")
 
@@ -459,8 +644,13 @@ type CoverageGapRequest struct {
 func BuildCoverageGapMessages(req CoverageGapRequest) []Message {
 	gapPrompt := buildCoverageGapPrompt(req)
 
+	systemPrompt := BuildSystemPrompt()
+	if req.CustomPrompt != "" {
+		systemPrompt += "\n\n## Additional project-specific instructions:\n" + req.CustomPrompt
+	}
+
 	return []Message{
-		{Role: "system", Content: BuildSystemPrompt()},
+		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: gapPrompt},
 	}
 }

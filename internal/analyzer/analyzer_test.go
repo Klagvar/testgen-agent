@@ -658,6 +658,129 @@ func TestDetectBuildTag_None(t *testing.T) {
 	}
 }
 
+// ─── Tests for embedded interface resolution ───
+
+const embeddedIfaceCode = `package embed
+
+type Reader interface {
+	Read(p []byte) (n int, err error)
+}
+
+type Writer interface {
+	Write(p []byte) (n int, err error)
+}
+
+type Closer interface {
+	Close() error
+}
+
+type ReadWriter interface {
+	Reader
+	Writer
+}
+
+type ReadCloser interface {
+	Reader
+	Close() error
+}
+
+type ReadWriteCloser interface {
+	ReadWriter
+	Closer
+}
+`
+
+func TestResolveEmbeddedInterfaces_Simple(t *testing.T) {
+	a, err := AnalyzeSource("embed.go", embeddedIfaceCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	rw := findType(a.Types, "ReadWriter")
+	if rw == nil {
+		t.Fatal("ReadWriter not found")
+	}
+	if rw.Kind != "interface" {
+		t.Fatalf("ReadWriter.Kind = %q, want interface", rw.Kind)
+	}
+
+	methodNames := make(map[string]bool)
+	for _, m := range rw.Methods {
+		methodNames[m.Name] = true
+	}
+	t.Logf("ReadWriter methods: %v", methodNames)
+
+	if !methodNames["Read"] {
+		t.Error("ReadWriter should have Read method from embedded Reader")
+	}
+	if !methodNames["Write"] {
+		t.Error("ReadWriter should have Write method from embedded Writer")
+	}
+	if len(rw.Methods) != 2 {
+		t.Errorf("ReadWriter should have 2 methods, got %d", len(rw.Methods))
+	}
+}
+
+func TestResolveEmbeddedInterfaces_Recursive(t *testing.T) {
+	a, err := AnalyzeSource("embed.go", embeddedIfaceCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	rwc := findType(a.Types, "ReadWriteCloser")
+	if rwc == nil {
+		t.Fatal("ReadWriteCloser not found")
+	}
+
+	methodNames := make(map[string]bool)
+	for _, m := range rwc.Methods {
+		methodNames[m.Name] = true
+	}
+	t.Logf("ReadWriteCloser methods: %v", methodNames)
+
+	for _, expected := range []string{"Read", "Write", "Close"} {
+		if !methodNames[expected] {
+			t.Errorf("ReadWriteCloser should have %s method", expected)
+		}
+	}
+	if len(rwc.Methods) != 3 {
+		t.Errorf("ReadWriteCloser should have 3 methods, got %d", len(rwc.Methods))
+	}
+}
+
+func TestResolveEmbeddedInterfaces_DirectMethodPriority(t *testing.T) {
+	a, err := AnalyzeSource("embed.go", embeddedIfaceCode)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	rc := findType(a.Types, "ReadCloser")
+	if rc == nil {
+		t.Fatal("ReadCloser not found")
+	}
+
+	methodNames := make(map[string]bool)
+	for _, m := range rc.Methods {
+		methodNames[m.Name] = true
+	}
+	t.Logf("ReadCloser methods: %v", methodNames)
+
+	if !methodNames["Read"] {
+		t.Error("ReadCloser should have Read from embedded Reader")
+	}
+	if !methodNames["Close"] {
+		t.Error("ReadCloser should have Close (direct method)")
+	}
+	if len(rc.Methods) != 2 {
+		t.Errorf("ReadCloser should have 2 methods, got %d", len(rc.Methods))
+	}
+
+	// Verify Close is listed first (direct methods come first)
+	if rc.Methods[0].Name != "Close" {
+		t.Errorf("first method should be Close (direct), got %q", rc.Methods[0].Name)
+	}
+}
+
 func TestExprToString_IndexExpr(t *testing.T) {
 	a, err := AnalyzeSource("generic.go", genericsCode)
 	if err != nil {
