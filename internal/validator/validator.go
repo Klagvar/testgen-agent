@@ -183,6 +183,10 @@ func ValidateWithRace(repoDir string, testFile string) *Result {
 
 // runGoTestRace runs go test -race and returns the output.
 func runGoTestRace(moduleRoot, pkgDir string) (output string, errMsg string) {
+	if !isRaceSupported() {
+		return "", "race detector unavailable (CGO disabled or unsupported platform)"
+	}
+
 	relPkg, err := filepath.Rel(moduleRoot, pkgDir)
 	if err != nil {
 		relPkg = "."
@@ -202,6 +206,15 @@ func runGoTestRace(moduleRoot, pkgDir string) (output string, errMsg string) {
 		return outputStr, extractTestErrors(outputStr)
 	}
 	return outputStr, ""
+}
+
+func isRaceSupported() bool {
+	cmd := exec.Command("go", "env", "CGO_ENABLED")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "1"
 }
 
 // extractRaceDetails extracts data race information from go test -race output.
