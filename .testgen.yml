@@ -1,9 +1,0 @@
-include_only:
-  - "testdata/sample-project/**"
-
-model: "qwen3-coder:30b"
-api_url: "http://localhost:11434/v1"
-coverage_threshold: 80
-mutation: true
-race_detection: true
-report_format: html
