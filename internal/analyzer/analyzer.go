@@ -34,13 +34,14 @@ type Param struct {
 
 // TypeInfo holds information about a type declaration (struct, interface, alias).
 type TypeInfo struct {
-	Name       string       // type name
-	Kind       string       // "struct", "interface", "alias", "other"
-	Fields     []FieldInfo  // struct fields
-	Methods    []MethodInfo // interface methods
-	Underlying string       // underlying type for aliases
-	Source     string       // source code of the declaration
-	TypeParams string       // generic type params, e.g. "[T comparable]"
+	Name           string       // type name
+	Kind           string       // "struct", "interface", "alias", "other"
+	Fields         []FieldInfo  // struct fields
+	Methods        []MethodInfo // interface methods
+	EmbeddedIfaces []string     // embedded interface names (for resolution)
+	Underlying     string       // underlying type for aliases
+	Source         string       // source code of the declaration
+	TypeParams     string       // generic type params, e.g. "[T comparable]"
 }
 
 // FieldInfo represents a struct field.
@@ -133,6 +134,7 @@ func AnalyzeSource(filename, src string) (*FileAnalysis, error) {
 		analysis.Functions = append(analysis.Functions, fi)
 	}
 
+	analysis.Types = ResolveEmbeddedInterfaces(analysis.Types)
 	return analysis, nil
 }
 
@@ -181,6 +183,7 @@ func AnalyzePackage(dir string) (*PackageAnalysis, error) {
 		}
 	}
 
+	pkg.AllTypes = ResolveEmbeddedInterfaces(pkg.AllTypes)
 	return pkg, nil
 }
 
@@ -382,10 +385,11 @@ func extractTypeInfo(fset *token.FileSet, ts *ast.TypeSpec, lines []string) Type
 		ti.Kind = "interface"
 		if t.Methods != nil {
 			for _, method := range t.Methods.List {
-				if len(method.Names) == 0 {
-					// Embedded interface
-					continue
-				}
+			if len(method.Names) == 0 {
+				embeddedName := exprToString(method.Type)
+				ti.EmbeddedIfaces = append(ti.EmbeddedIfaces, embeddedName)
+				continue
+			}
 				mi := MethodInfo{
 					Name: method.Names[0].Name,
 				}
@@ -410,6 +414,66 @@ func extractTypeInfo(fset *token.FileSet, ts *ast.TypeSpec, lines []string) Type
 	}
 
 	return ti
+}
+
+// ResolveEmbeddedInterfaces resolves embedded interface methods for all interface types.
+// For each interface that embeds other interfaces, it recursively collects their methods.
+func ResolveEmbeddedInterfaces(types []TypeInfo) []TypeInfo {
+	byName := make(map[string]*TypeInfo)
+	for i := range types {
+		byName[types[i].Name] = &types[i]
+	}
+
+	for i := range types {
+		if types[i].Kind != "interface" || len(types[i].EmbeddedIfaces) == 0 {
+			continue
+		}
+		resolved := resolveMethodsRecursive(&types[i], byName, make(map[string]bool))
+		types[i].Methods = resolved
+	}
+	return types
+}
+
+func resolveMethodsRecursive(ti *TypeInfo, byName map[string]*TypeInfo, visited map[string]bool) []MethodInfo {
+	if visited[ti.Name] {
+		return ti.Methods
+	}
+	visited[ti.Name] = true
+
+	methodSet := make(map[string]MethodInfo)
+	for _, m := range ti.Methods {
+		methodSet[m.Name] = m
+	}
+
+	for _, embName := range ti.EmbeddedIfaces {
+		embName = strings.TrimPrefix(embName, "*")
+		if emb, ok := byName[embName]; ok && emb.Kind == "interface" {
+			embMethods := resolveMethodsRecursive(emb, byName, visited)
+			for _, m := range embMethods {
+				if _, exists := methodSet[m.Name]; !exists {
+					methodSet[m.Name] = m
+				}
+			}
+		}
+	}
+
+	var result []MethodInfo
+	for _, m := range ti.Methods {
+		result = append(result, m)
+	}
+	for _, m := range methodSet {
+		found := false
+		for _, existing := range ti.Methods {
+			if existing.Name == m.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // funcTypeToString converts ast.FuncType to a string signature.

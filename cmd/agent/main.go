@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	maxRetries         = 3   // max retry attempts for fixing compilation/test errors
-	maxCoverageRetries = 2   // max coverage re-generation iterations
-	coverageThreshold  = 80.0 // minimum diff coverage (%)
+	defaultMaxRetries     = 3    // max retry attempts for fixing compilation/test errors
+	defaultMaxCoverIter   = 2    // max coverage re-generation iterations
+	defaultCoverThreshold = 80.0 // minimum diff coverage (%)
+	defaultTimeoutSec     = 300  // default test timeout in seconds
 )
 
 func main() {
@@ -44,7 +45,7 @@ func main() {
 	outDir := flag.String("out", "", "Output directory for tests (default: next to source)")
 	dryRun := flag.Bool("dry-run", false, "Preview prompt without calling LLM")
 	noValidate := flag.Bool("no-validate", false, "Skip test validation")
-	coverageTarget := flag.Float64("coverage", coverageThreshold, "Target diff coverage (%)")
+	coverageTarget := flag.Float64("coverage", defaultCoverThreshold, "Target diff coverage (%)")
 	noCoverage := flag.Bool("no-coverage", false, "Skip diff coverage analysis")
 	ghToken := flag.String("github-token", "", "GitHub token for PR comments (or GITHUB_TOKEN env)")
 	ghRepo := flag.String("github-repo", "", "GitHub repo (owner/repo)")
@@ -123,22 +124,38 @@ func main() {
 	}
 
 	// ─── Step 3: For each .go file — AST analysis + test generation ───
+	cfgRetries := projectCfg.MaxRetries
+	if cfgRetries < 1 {
+		cfgRetries = defaultMaxRetries
+	}
+	cfgCoverIter := projectCfg.MaxCoverageIter
+	if cfgCoverIter < 1 {
+		cfgCoverIter = defaultMaxCoverIter
+	}
+	cfgTimeout := projectCfg.Timeout
+	if cfgTimeout < 10 {
+		cfgTimeout = defaultTimeoutSec
+	}
+
 	opts := pipelineOpts{
-		RepoPath:       *repoPath,
-		BaseBranch:     *baseBranch,
-		OutDir:         *outDir,
-		APIKey:         *apiKey,
-		BaseURL:        *baseURL,
-		Model:          *model,
-		DryRun:         *dryRun,
-		NoValidate:     *noValidate,
-		NoCoverage:     *noCoverage,
-		NoSmartDiff:    *noSmartDiff,
-		RaceDetection:  *raceDetection,
-		MutationTest:   *mutationTest,
-		CoverageTarget: *coverageTarget,
-		ProjectCfg:     projectCfg,
-		FnCache:        fnCache,
+		RepoPath:        *repoPath,
+		BaseBranch:      *baseBranch,
+		OutDir:          *outDir,
+		APIKey:          *apiKey,
+		BaseURL:         *baseURL,
+		Model:           *model,
+		DryRun:          *dryRun,
+		NoValidate:      *noValidate,
+		NoCoverage:      *noCoverage,
+		NoSmartDiff:     *noSmartDiff,
+		RaceDetection:   *raceDetection,
+		MutationTest:    *mutationTest,
+		CoverageTarget:  *coverageTarget,
+		MaxRetries:      cfgRetries,
+		MaxCoverageIter: cfgCoverIter,
+		TimeoutSeconds:  cfgTimeout,
+		ProjectCfg:      projectCfg,
+		FnCache:         fnCache,
 	}
 
 	for _, f := range files {
@@ -318,6 +335,8 @@ func runCoverageLoop(
 	changedLines []int,
 	affectedFuncs []analyzer.FuncInfo,
 	target float64,
+	maxIter int,
+	timeoutSec int,
 ) float64 {
 	// Determine module root and package directory
 	pkgDir := filepath.Dir(sourceFilePath)
@@ -330,8 +349,8 @@ func runCoverageLoop(
 
 	var lastCoverage float64
 
-	for iter := 1; iter <= maxCoverageRetries; iter++ {
-		fmt.Printf("\n     📊 Coverage analysis (iteration %d/%d)...\n", iter, maxCoverageRetries)
+	for iter := 1; iter <= maxIter; iter++ {
+		fmt.Printf("\n     📊 Coverage analysis (iteration %d/%d)...\n", iter, maxIter)
 
 		// Run go test -coverprofile
 		coverFile, testOutput, err := coverage.RunCoverage(moduleRoot, pkgDir)
@@ -434,7 +453,7 @@ func runCoverageLoop(
 		}
 
 		fmt.Printf("     🔬 Validating...\n")
-		valResult := validator.Validate(repoPath, testFilePath)
+		valResult := validator.Validate(repoPath, testFilePath, timeoutSec)
 
 		if !valResult.IsValid() {
 			fmt.Printf("     ⚠️  Coverage iteration %d failed validation: %s\n", iter, valResult.Summary())
@@ -657,7 +676,7 @@ func applyConfigDefaults(
 	}
 
 	// Coverage threshold: use config if CLI uses default value
-	if *coverageTarget == coverageThreshold && cfg.CoverageThreshold > 0 {
+	if *coverageTarget == defaultCoverThreshold && cfg.CoverageThreshold > 0 {
 		*coverageTarget = cfg.CoverageThreshold
 	}
 }

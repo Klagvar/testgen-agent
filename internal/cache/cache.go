@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
@@ -65,8 +66,10 @@ func (c *Cache) Save() error {
 }
 
 // Key builds a cache key for a function in a file.
+// Uses the full path (forward slashes) to avoid collisions
+// when different packages contain files with the same base name.
 func Key(filePath string, funcName string) string {
-	return filepath.Base(filePath) + "::" + funcName
+	return filepath.ToSlash(filePath) + "::" + funcName
 }
 
 // ComputeHash computes a hash for a function based on its content and dependencies.
@@ -123,9 +126,9 @@ func (c *Cache) Remove(key string) {
 
 // Invalidate removes all entries for the given file.
 func (c *Cache) Invalidate(filePath string) {
-	base := filepath.Base(filePath)
+	prefix := filepath.ToSlash(filePath) + "::"
 	for key := range c.Entries {
-		if len(key) > len(base)+2 && key[:len(base)+2] == base+"::" {
+		if strings.HasPrefix(key, prefix) {
 			delete(c.Entries, key)
 		}
 	}

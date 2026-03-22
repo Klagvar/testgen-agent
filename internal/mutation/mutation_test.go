@@ -172,6 +172,148 @@ func TestFormatResult(t *testing.T) {
 	}
 }
 
+const returnSrc = `package example
+
+import "errors"
+
+func GetError() error {
+	return nil
+}
+
+func GetNum() int {
+	return 0
+}
+
+func GetFlag() bool {
+	return true
+}
+
+func GetName() string {
+	return ""
+}
+
+func GetOne() int {
+	return 1
+}
+
+var _ = errors.New
+`
+
+func TestGenerateMutants_ReturnNil(t *testing.T) {
+	mutants, err := GenerateMutants(returnSrc, "example.go", []string{"GetError"})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	found := false
+	for _, m := range mutants {
+		if m.Type == MutReturn && m.Original == "nil" {
+			found = true
+			if m.Replacement != `errors.New("mutant")` {
+				t.Errorf("expected replacement errors.New(\"mutant\"), got %s", m.Replacement)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected MutReturn mutant for return nil")
+	}
+}
+
+func TestGenerateMutants_ReturnZero(t *testing.T) {
+	mutants, err := GenerateMutants(returnSrc, "example.go", []string{"GetNum"})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	found := false
+	for _, m := range mutants {
+		if m.Type == MutReturn && m.Original == "0" && m.Replacement == "1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected MutReturn mutant for return 0 → 1")
+	}
+}
+
+func TestGenerateMutants_ReturnTrue(t *testing.T) {
+	mutants, err := GenerateMutants(returnSrc, "example.go", []string{"GetFlag"})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	found := false
+	for _, m := range mutants {
+		if m.Type == MutReturn && m.Original == "true" && m.Replacement == "false" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected MutReturn mutant for return true → false")
+	}
+}
+
+func TestGenerateMutants_ReturnEmptyString(t *testing.T) {
+	mutants, err := GenerateMutants(returnSrc, "example.go", []string{"GetName"})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	found := false
+	for _, m := range mutants {
+		if m.Type == MutReturn && m.Original == `""` && m.Replacement == `"mutant"` {
+			found = true
+		}
+	}
+	if !found {
+		t.Error(`expected MutReturn mutant for return "" → "mutant"`)
+	}
+}
+
+func TestApplyMutant_ReturnNil(t *testing.T) {
+	m := &Mutant{
+		ID:          1,
+		Type:        MutReturn,
+		File:        "example.go",
+		Line:        6,
+		Original:    "nil",
+		Replacement: `errors.New("mutant")`,
+		FuncName:    "GetError",
+	}
+
+	mutated, err := applyMutant(returnSrc, m)
+	if err != nil {
+		t.Fatalf("applyMutant error: %v", err)
+	}
+
+	if !strings.Contains(mutated, `errors.New("mutant")`) {
+		t.Error(`mutated code should contain errors.New("mutant")`)
+	}
+	t.Logf("Mutated:\n%s", mutated)
+}
+
+func TestApplyMutant_ReturnZero(t *testing.T) {
+	m := &Mutant{
+		ID:          1,
+		Type:        MutReturn,
+		File:        "example.go",
+		Line:        10,
+		Original:    "0",
+		Replacement: "1",
+		FuncName:    "GetNum",
+	}
+
+	mutated, err := applyMutant(returnSrc, m)
+	if err != nil {
+		t.Fatalf("applyMutant error: %v", err)
+	}
+
+	if !strings.Contains(mutated, "return 1") {
+		t.Error("mutated code should contain 'return 1'")
+	}
+	t.Logf("Mutated:\n%s", mutated)
+}
+
 func TestStringToToken(t *testing.T) {
 	tests := map[string]bool{
 		"+": true, "-": true, "*": true, "/": true,

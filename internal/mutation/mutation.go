@@ -54,30 +54,29 @@ type Result struct {
 // RunMutationTests performs mutation testing.
 // sourceFile is the path to a .go file, funcNames are functions to mutate (nil = all),
 // moduleRoot is the module root (where go.mod is).
+//
+// Mutations are applied to temporary copies of the package so the original
+// source is never modified, even if the process crashes mid-run.
 func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) (*Result, error) {
-	// Read the original file
 	originalBytes, err := os.ReadFile(sourceFile)
 	if err != nil {
 		return nil, fmt.Errorf("read source: %w", err)
 	}
 	original := string(originalBytes)
 
-	// Generate mutants
 	mutants, err := GenerateMutants(original, sourceFile, funcNames)
 	if err != nil {
 		return nil, fmt.Errorf("generate mutants: %w", err)
 	}
 
-	result := &Result{
-		Total: len(mutants),
-	}
+	result := &Result{Total: len(mutants)}
 
 	pkgDir := filepath.Dir(sourceFile)
+	sourceBase := filepath.Base(sourceFile)
 
 	for i := range mutants {
 		m := &mutants[i]
 
-		// Apply mutation
 		mutatedCode, err := applyMutant(original, m)
 		if err != nil {
 			m.Error = err.Error()
@@ -85,15 +84,22 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 			continue
 		}
 
-		// Write the mutated file
-		if err := os.WriteFile(sourceFile, []byte(mutatedCode), 0644); err != nil {
+		tmpRoot, tmpPkg, err := copyPackageToTemp(pkgDir, moduleRoot)
+		if err != nil {
+			m.Error = fmt.Sprintf("copy to temp: %v", err)
+			result.Errors++
+			continue
+		}
+
+		tmpSourceFile := filepath.Join(tmpPkg, sourceBase)
+		if err := os.WriteFile(tmpSourceFile, []byte(mutatedCode), 0644); err != nil {
+			os.RemoveAll(tmpRoot)
 			m.Error = err.Error()
 			result.Errors++
 			continue
 		}
 
-		// Run tests
-		killed := runTestsForMutant(moduleRoot, pkgDir)
+		killed := runTestsForMutant(tmpRoot, tmpPkg)
 		m.Killed = killed
 
 		if killed {
@@ -102,8 +108,7 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 			result.Survived++
 		}
 
-		// Restore original
-		os.WriteFile(sourceFile, originalBytes, 0644)
+		os.RemoveAll(tmpRoot)
 	}
 
 	result.Mutants = mutants
@@ -114,6 +119,63 @@ func RunMutationTests(sourceFile string, funcNames []string, moduleRoot string) 
 	}
 
 	return result, nil
+}
+
+// copyPackageToTemp copies Go source files from pkgDir into a temporary
+// directory together with go.mod/go.sum from moduleRoot so that `go test`
+// can run in isolation.  Returns (tmpRoot, tmpPkgDir, error).
+func copyPackageToTemp(pkgDir, moduleRoot string) (string, string, error) {
+	tmpRoot, err := os.MkdirTemp("", "testgen-mutation-*")
+	if err != nil {
+		return "", "", err
+	}
+
+	for _, name := range []string{"go.mod", "go.sum"} {
+		src := filepath.Join(moduleRoot, name)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		_ = os.WriteFile(filepath.Join(tmpRoot, name), data, 0644)
+	}
+
+	relPath, err := filepath.Rel(moduleRoot, pkgDir)
+	if err != nil || relPath == "." {
+		return tmpRoot, tmpRoot, copyGoFiles(pkgDir, tmpRoot)
+	}
+
+	targetDir := filepath.Join(tmpRoot, relPath)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		os.RemoveAll(tmpRoot)
+		return "", "", err
+	}
+
+	if err := copyGoFiles(pkgDir, targetDir); err != nil {
+		os.RemoveAll(tmpRoot)
+		return "", "", err
+	}
+
+	return tmpRoot, targetDir, nil
+}
+
+func copyGoFiles(srcDir, dstDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(srcDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dstDir, entry.Name()), data, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GenerateMutants creates a list of potential mutations for a file.
@@ -159,15 +221,24 @@ func GenerateMutants(src, filename string, funcNames []string) ([]Mutant, error)
 					mutants = append(mutants, m)
 				}
 
-			case *ast.UnaryExpr:
-				muts := unaryMutations(node, fset, funcDecl.Name.Name)
-				for _, m := range muts {
-					id++
-					m.ID = id
-					m.File = filename
-					mutants = append(mutants, m)
-				}
+		case *ast.UnaryExpr:
+			muts := unaryMutations(node, fset, funcDecl.Name.Name)
+			for _, m := range muts {
+				id++
+				m.ID = id
+				m.File = filename
+				mutants = append(mutants, m)
 			}
+
+		case *ast.ReturnStmt:
+			muts := returnMutations(node, fset, funcDecl.Name.Name)
+			for _, m := range muts {
+				id++
+				m.ID = id
+				m.File = filename
+				mutants = append(mutants, m)
+			}
+		}
 
 			return true
 		})
@@ -229,6 +300,78 @@ func unaryMutations(expr *ast.UnaryExpr, fset *token.FileSet, funcName string) [
 			Replacement: "" ,
 			FuncName:    funcName,
 		})
+	}
+
+	return mutants
+}
+
+// returnMutations generates mutations for return statement literals.
+func returnMutations(stmt *ast.ReturnStmt, fset *token.FileSet, funcName string) []Mutant {
+	var mutants []Mutant
+	line := fset.Position(stmt.Pos()).Line
+
+	for _, result := range stmt.Results {
+		switch v := result.(type) {
+		case *ast.Ident:
+			switch v.Name {
+			case "nil":
+				mutants = append(mutants, Mutant{
+					Type:        MutReturn,
+					Line:        line,
+					Original:    "nil",
+					Replacement: `errors.New("mutant")`,
+					FuncName:    funcName,
+				})
+			case "true":
+				mutants = append(mutants, Mutant{
+					Type:        MutReturn,
+					Line:        line,
+					Original:    "true",
+					Replacement: "false",
+					FuncName:    funcName,
+				})
+			case "false":
+				mutants = append(mutants, Mutant{
+					Type:        MutReturn,
+					Line:        line,
+					Original:    "false",
+					Replacement: "true",
+					FuncName:    funcName,
+				})
+			}
+		case *ast.BasicLit:
+			switch v.Kind {
+			case token.INT:
+				switch v.Value {
+				case "0":
+					mutants = append(mutants, Mutant{
+						Type:        MutReturn,
+						Line:        line,
+						Original:    "0",
+						Replacement: "1",
+						FuncName:    funcName,
+					})
+				case "1":
+					mutants = append(mutants, Mutant{
+						Type:        MutReturn,
+						Line:        line,
+						Original:    "1",
+						Replacement: "0",
+						FuncName:    funcName,
+					})
+				}
+			case token.STRING:
+				if v.Value == `""` {
+					mutants = append(mutants, Mutant{
+						Type:        MutReturn,
+						Line:        line,
+						Original:    `""`,
+						Replacement: `"mutant"`,
+						FuncName:    funcName,
+					})
+				}
+			}
+		}
 	}
 
 	return mutants
@@ -296,6 +439,18 @@ func applyMutant(src string, m *Mutant) (string, error) {
 			mutated := strings.Replace(lineContent, "!", "", 1)
 			lines[m.Line-1] = mutated
 			return strings.Join(lines, "\n"), nil
+		}
+	}
+
+	if m.Type == MutReturn {
+		lines := strings.Split(src, "\n")
+		if m.Line >= 1 && m.Line <= len(lines) {
+			lineContent := lines[m.Line-1]
+			mutated := strings.Replace(lineContent, m.Original, m.Replacement, 1)
+			if mutated != lineContent {
+				lines[m.Line-1] = mutated
+				return strings.Join(lines, "\n"), nil
+			}
 		}
 	}
 

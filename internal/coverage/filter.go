@@ -1,6 +1,9 @@
 package coverage
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"strings"
 )
@@ -28,6 +31,97 @@ func FilterExecutableLinesFromSource(src string, lines []int) []int {
 		return lines
 	}
 
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "filter.go", src, parser.ParseComments)
+	if err != nil {
+		return filterExecutableLinesTextFallback(src, lines)
+	}
+
+	exec := executableLinesFromAST(fset, file)
+	removeBraceOnlyLines(src, exec)
+
+	var result []int
+	for _, l := range lines {
+		if exec[l] {
+			result = append(result, l)
+		}
+	}
+	return result
+}
+
+func executableLinesFromAST(fset *token.FileSet, file *ast.File) map[int]bool {
+	exec := make(map[int]bool)
+	addRange := func(start, end token.Pos) {
+		if !start.IsValid() || !end.IsValid() {
+			return
+		}
+		sl := fset.Position(start).Line
+		el := fset.Position(end).Line
+		for l := sl; l <= el; l++ {
+			exec[l] = true
+		}
+	}
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			if x.Body != nil {
+				addRange(x.Pos(), x.Body.Lbrace)
+			}
+		case *ast.AssignStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.ExprStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.ReturnStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.IfStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.ForStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.RangeStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.SwitchStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.TypeSwitchStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.SelectStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.DeferStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.GoStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.SendStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.IncDecStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.BranchStmt:
+			addRange(x.Pos(), x.End())
+		case *ast.DeclStmt:
+			addRange(x.Pos(), x.End())
+		}
+		return true
+	})
+	return exec
+}
+
+// removeBraceOnlyLines drops lines that contain only `{` or `}` (after trim).
+// Statement Pos..End often spans closing braces; those lines are not separate
+// coverage counters in Go.
+func removeBraceOnlyLines(src string, exec map[int]bool) {
+	srcLines := strings.Split(src, "\n")
+	for l := range exec {
+		if l < 1 || l > len(srcLines) {
+			delete(exec, l)
+			continue
+		}
+		trimmed := strings.TrimSpace(srcLines[l-1])
+		if trimmed == "{" || trimmed == "}" {
+			delete(exec, l)
+		}
+	}
+}
+
+func filterExecutableLinesTextFallback(src string, lines []int) []int {
 	srcLines := strings.Split(src, "\n")
 	lineSet := make(map[int]bool, len(lines))
 	for _, l := range lines {

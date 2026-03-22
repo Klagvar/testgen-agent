@@ -24,21 +24,24 @@ import (
 )
 
 type pipelineOpts struct {
-	RepoPath       string
-	BaseBranch     string
-	OutDir         string
-	APIKey         string
-	BaseURL        string
-	Model          string
-	DryRun         bool
-	NoValidate     bool
-	NoCoverage     bool
-	NoSmartDiff    bool
-	RaceDetection  bool
-	MutationTest   bool
-	CoverageTarget float64
-	ProjectCfg     *config.Config
-	FnCache        *cache.Cache
+	RepoPath          string
+	BaseBranch        string
+	OutDir            string
+	APIKey            string
+	BaseURL           string
+	Model             string
+	DryRun            bool
+	NoValidate        bool
+	NoCoverage        bool
+	NoSmartDiff       bool
+	RaceDetection     bool
+	MutationTest      bool
+	CoverageTarget    float64
+	MaxRetries        int
+	MaxCoverageIter   int
+	TimeoutSeconds    int
+	ProjectCfg        *config.Config
+	FnCache           *cache.Cache
 }
 
 type fileResult struct {
@@ -103,6 +106,22 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 
 	if pkgErr == nil && pkgAnalysis != nil {
 		usedTypes, calledFuncs = collectDependencies(affectedFuncs, pkgAnalysis)
+	}
+
+	implMap := make(map[string][]string)
+	if pkgErr == nil && pkgAnalysis != nil {
+		for _, ti := range usedTypes {
+			if ti.Kind == "interface" && len(ti.Methods) > 0 {
+				impls := analyzer.FindImplementors(ti, pkgAnalysis.AllTypes, pkgAnalysis.AllFuncs)
+				if len(impls) > 0 {
+					names := make([]string, len(impls))
+					for i, imp := range impls {
+						names[i] = imp.Name
+					}
+					implMap[ti.Name] = names
+				}
+			}
+		}
 	}
 
 	// Cache check
@@ -177,6 +196,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		RaceDetection:     useRace,
 		PatternHints:      patternHints,
 		MockCode:          mockCode,
+		Implementors:      implMap,
 	}
 
 	budget := prompt.DefaultBudget()
@@ -236,6 +256,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		fileDiffCov = runCoverageLoop(
 			client, cfg, req, testFilePath, fullPath, opts.RepoPath,
 			changedLines, affectedFuncs, opts.CoverageTarget,
+			opts.MaxCoverageIter, opts.TimeoutSeconds,
 		)
 	}
 
@@ -377,11 +398,11 @@ func runGenerationLoop(
 	var lastTestOutput string
 	var lastValError string
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for attempt := 1; attempt <= opts.MaxRetries; attempt++ {
 		if attempt == 1 {
 			fmt.Printf("     🤖 Generating tests via %s...\n", cfg.Model)
 		} else {
-			fmt.Printf("     🔄 Attempt %d/%d — fixing errors...\n", attempt, maxRetries)
+			fmt.Printf("     🔄 Attempt %d/%d — fixing errors...\n", attempt, opts.MaxRetries)
 		}
 
 		var result *llm.GenerateResponse
@@ -391,6 +412,7 @@ func runGenerationLoop(
 			result, err = client.Generate(prompt.BuildMessages(req))
 		} else {
 			var failingNames []string
+			var compactFB string
 			if lastTestOutput != "" {
 				testResults := pruner.ParseTestOutput(lastTestOutput)
 				failingNames = pruner.FailingTopLevel(testResults)
@@ -398,8 +420,12 @@ func runGenerationLoop(
 					fmt.Printf("     🎯 Focusing fix on %d failing test(s): %s\n",
 						len(failingNames), strings.Join(failingNames, ", "))
 				}
+				fb := pruner.ParseStructuredFeedback(lastTestOutput)
+				if len(fb) > 0 {
+					compactFB = pruner.FormatCompactFeedback(fb)
+				}
 			}
-			fixMessages := prompt.BuildFixMessages(req, rawNewCode, lastValError, attempt, failingNames)
+			fixMessages := prompt.BuildFixMessages(req, rawNewCode, lastValError, attempt, failingNames, compactFB)
 			result, err = client.Generate(fixMessages)
 		}
 
@@ -451,7 +477,7 @@ func runGenerationLoop(
 		}
 
 		fmt.Printf("     🔬 Validating...\n")
-		valResult := validator.Validate(opts.RepoPath, testFilePath)
+		valResult := validator.Validate(opts.RepoPath, testFilePath, opts.TimeoutSeconds)
 
 		if valResult.IsValid() {
 			fmt.Printf("     %s\n", valResult.Summary())
@@ -462,7 +488,13 @@ func runGenerationLoop(
 				if raceResult.TestError != "" && strings.Contains(raceResult.TestError, "race detector unavailable") {
 					fmt.Printf("     ℹ️  Race detector skipped (CGO disabled)\n")
 				} else if raceResult.HasRaces {
-					fmt.Printf("     ⚠️  DATA RACE detected:\n%s\n", raceResult.RaceDetails)
+					fmt.Printf("     ❌ DATA RACE detected — tests rejected:\n%s\n", raceResult.RaceDetails)
+					lastValError = "DATA RACE: " + raceResult.RaceDetails
+					lastTestOutput = raceResult.TestOutput
+					if attempt == opts.MaxRetries {
+						fmt.Printf("     ⛔ Max retries reached (%d)\n", opts.MaxRetries)
+					}
+					continue
 				} else if raceResult.IsValid() {
 					fmt.Printf("     ✅ Race detector: no races found\n")
 				} else {
@@ -479,8 +511,8 @@ func runGenerationLoop(
 		lastTestOutput = valResult.TestOutput
 		fmt.Printf("     %s\n", valResult.Summary())
 
-		if attempt == maxRetries {
-			fmt.Printf("     ⛔ Max retries reached (%d)\n", maxRetries)
+		if attempt == opts.MaxRetries {
+			fmt.Printf("     ⛔ Max retries reached (%d)\n", opts.MaxRetries)
 		}
 	}
 
@@ -535,7 +567,7 @@ func tryPrune(
 	}
 
 	fmt.Printf("     🔬 Re-validating pruned tests...\n")
-	valResult := validator.Validate(opts.RepoPath, testFilePath)
+	valResult := validator.Validate(opts.RepoPath, testFilePath, opts.TimeoutSeconds)
 
 	if valResult.IsValid() {
 		fmt.Printf("     %s\n", valResult.Summary())
