@@ -3,3 +3,8 @@ mutation: true
 race_detection: true
 report_format: "html"
 max_context_tokens: 16000
+max_retries: 3
+max_coverage_iterations: 2
+timeout_seconds: 120
+
+include_only: "testdata/sample-project/**"
