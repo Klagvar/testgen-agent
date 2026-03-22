@@ -13,6 +13,26 @@ import (
 
 const configFileName = ".testgen.yml"
 
+// StringOrSlice allows a YAML field to be either a single string or a list of strings.
+type StringOrSlice []string
+
+func (s *StringOrSlice) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		*s = []string{value.Value}
+		return nil
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*s = list
+		return nil
+	default:
+		return fmt.Errorf("expected string or list, got %v", value.Kind)
+	}
+}
+
 // Config holds agent settings.
 type Config struct {
 	// LLM settings
@@ -27,8 +47,8 @@ type Config struct {
 	Timeout           int     `yaml:"timeout_seconds"`
 
 	// Filtering
-	Exclude     []string `yaml:"exclude"`
-	IncludeOnly []string `yaml:"include_only"`
+	Exclude     StringOrSlice `yaml:"exclude"`
+	IncludeOnly StringOrSlice `yaml:"include_only"`
 
 	// Features
 	Mutation     bool `yaml:"mutation"`
@@ -76,7 +96,7 @@ func Load(dir string) (*Config, error) {
 	}
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+		return &cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
 	// Apply defaults for zero values
