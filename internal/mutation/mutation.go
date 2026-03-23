@@ -319,7 +319,7 @@ func returnMutations(stmt *ast.ReturnStmt, fset *token.FileSet, funcName string)
 					Type:        MutReturn,
 					Line:        line,
 					Original:    "nil",
-					Replacement: `errors.New("mutant")`,
+					Replacement: `fmt.Errorf("mutant")`,
 					FuncName:    funcName,
 				})
 			case "true":

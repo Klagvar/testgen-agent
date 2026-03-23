@@ -209,8 +209,8 @@ func TestGenerateMutants_ReturnNil(t *testing.T) {
 	for _, m := range mutants {
 		if m.Type == MutReturn && m.Original == "nil" {
 			found = true
-			if m.Replacement != `errors.New("mutant")` {
-				t.Errorf("expected replacement errors.New(\"mutant\"), got %s", m.Replacement)
+			if m.Replacement != `fmt.Errorf("mutant")` {
+				t.Errorf("expected replacement fmt.Errorf(\"mutant\"), got %s", m.Replacement)
 			}
 		}
 	}
@@ -277,7 +277,7 @@ func TestApplyMutant_ReturnNil(t *testing.T) {
 		File:        "example.go",
 		Line:        6,
 		Original:    "nil",
-		Replacement: `errors.New("mutant")`,
+		Replacement: `fmt.Errorf("mutant")`,
 		FuncName:    "GetError",
 	}
 
@@ -286,8 +286,8 @@ func TestApplyMutant_ReturnNil(t *testing.T) {
 		t.Fatalf("applyMutant error: %v", err)
 	}
 
-	if !strings.Contains(mutated, `errors.New("mutant")`) {
-		t.Error(`mutated code should contain errors.New("mutant")`)
+	if !strings.Contains(mutated, `fmt.Errorf("mutant")`) {
+		t.Error(`mutated code should contain fmt.Errorf("mutant")`)
 	}
 	t.Logf("Mutated:\n%s", mutated)
 }

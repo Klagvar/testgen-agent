@@ -26,16 +26,24 @@ type CompareResult struct {
 }
 
 // GetBaseFileContent retrieves file content from the base branch via git show.
+// Returns ("", nil) if the file does not exist in the base branch.
+// Returns ("", error) if git itself fails (e.g. bad ref, repo issue).
 func GetBaseFileContent(repoDir, baseBranch, filePath string) (string, error) {
-	// git show origin/main:path/to/file.go
 	ref := baseBranch + ":" + filePath
 	cmd := exec.Command("git", "show", ref)
 	cmd.Dir = repoDir
 
 	output, err := cmd.Output()
 	if err != nil {
-		// File does not exist in base branch — all functions are new
-		return "", nil
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitErr.Stderr)
+			if strings.Contains(stderr, "does not exist") ||
+				strings.Contains(stderr, "not exist in") ||
+				strings.Contains(stderr, "path") && strings.Contains(stderr, "exist") {
+				return "", nil
+			}
+		}
+		return "", fmt.Errorf("git show %s: %w", ref, err)
 	}
 
 	return string(output), nil

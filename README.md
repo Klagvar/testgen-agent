@@ -22,25 +22,25 @@ git diff → Diff Parser → AST Analyzer → Prompt Builder → LLM → Validat
 | Модуль | Описание | Тесты |
 |--------|----------|:-----:|
 | `internal/diff` | Парсинг `git diff` — файлы, хунки, строки | 5 |
-| `internal/analyzer` | AST-анализ: функции, типы, интерфейсы, ресиверы, кросс-файловые вызовы, concurrency, generics | 33 |
-| `internal/prompt` | Построение промптов: контекст, типы, моки, concurrency hints, token budget, extraction функций по имени | 18 |
+| `internal/analyzer` | AST-анализ: функции, типы, интерфейсы, embedded-интерфейсы, ресиверы, кросс-файловые вызовы, concurrency, generics, interface satisfaction | 40 |
+| `internal/prompt` | Построение промптов: контекст, типы, моки, concurrency hints, token budget, struct tags, package-level vars | 20 |
 | `internal/llm` | Клиент OpenAI-совместимых API (OpenAI, Ollama, OpenRouter, Groq) с retry и backoff | 5 |
 | `internal/validator` | Валидация: `goimports` + `go build` + `go test` + `go test -race` (с проверкой CGO) | — |
-| `internal/coverage` | Парсинг `cover.out`, расчёт diff coverage, фильтрация неисполняемых строк | 20 |
-| `internal/pruner` | Парсинг `go test -v` вывода, AST-удаление падающих тестов и сабтестов | 8 |
-| `internal/merger` | AST-слияние новых тестов с существующими без перезаписи | 6 |
-| `internal/mockgen` | Детерминистическая генерация моков для Go-интерфейсов | 5 |
-| `internal/mutation` | Мутационное тестирование: подмена операторов, расчёт mutation score | 6 |
-| `internal/dedup` | AST-дедупликация table-driven тест-кейсов | 7 |
-| `internal/cache` | Кэш: хэш (сигнатура + тело) → пропуск LLM для неизменённых функций | 10 |
+| `internal/coverage` | Парсинг `cover.out`, расчёт diff coverage, AST-фильтрация неисполняемых строк | 20 |
+| `internal/pruner` | Парсинг `go test -v` вывода, structured feedback (expected/got), AST-удаление падающих тестов | 16 |
+| `internal/merger` | AST-слияние новых тестов с существующими без перезаписи | 15 |
+| `internal/mockgen` | Детерминистическая генерация моков для Go-интерфейсов + авто-инжект в тесты | 5 |
+| `internal/mutation` | Мутационное тестирование: бинарные, унарные операторы и return-мутации, safe temp copy | 12 |
+| `internal/dedup` | AST-дедупликация table-driven тест-кейсов | 14 |
+| `internal/cache` | Кэш: хэш (сигнатура + тело + полный путь) → пропуск LLM для неизменённых функций | 11 |
 | `internal/gitdiff` | Git-based сравнение: AST-нормализация тел функций vs base branch | 12 |
 | `internal/config` | Конфиг `.testgen.yml`: модель, threshold, exclude/include_only (string или список) | 15 |
-| `internal/patterns` | AST-детекция паттернов: HTTP handlers, context, time, env, file I/O, SQL/DB | 18 |
+| `internal/patterns` | AST-детекция паттернов: HTTP handlers, context, time, env, file I/O, SQL/DB, errors.Is/As, http.Client, JSON, io.Reader/Writer | 30 |
 | `internal/report` | HTML-дашборд: coverage bar chart, mutation score, статистика | 7 |
-| `internal/github` | PR-комментарии через GitHub API — отдельный отчёт на каждый запуск с привязкой к коммиту | 12 |
+| `internal/github` | PR-комментарии через GitHub API — отдельный отчёт на каждый запуск с привязкой к коммиту, retry | 12 |
 | `cmd/agent` | CLI-оркестратор: пайплайн генерации, валидации, coverage loop | — |
 
-**Итого: 187 юнит-тестов, 18 модулей.**
+**Итого: 239 юнит-тестов, 18 модулей.**
 
 ## Ключевые фичи
 
@@ -51,15 +51,19 @@ git diff → Diff Parser → AST Analyzer → Prompt Builder → LLM → Validat
 - **AST Merge** — LLM генерирует только новые тесты, которые автоматически вливаются в существующие
 - **Diff Coverage** — итеративная догенерация тестов для непокрытых строк с фильтрацией неисполняемых строк (импорты, комментарии)
 - **Concurrency-aware** — детекция goroutines/mutex/channels/atomic, генерация concurrent-тестов, `-race` flag
-- **Pattern detection** — распознавание HTTP handlers, context.Context, time.Now(), os.Getenv(), file I/O, SQL/DB для подсказок в промпте
+- **Pattern detection** — распознавание HTTP handlers, context.Context, time.Now(), os.Getenv(), file I/O, SQL/DB, errors.Is/As, http.Client, JSON encoding, io.Reader/Writer для подсказок в промпте
 - **Token budget** — эвристическая оценка токенов и урезание контекста для вписывания в окно модели
-- **Mutation testing** — подмена операторов для оценки качества тестов
+- **Mutation testing** — подмена операторов (бинарных, унарных, return), безопасное тестирование в temp-копии
 - **Git-based skip** — сравнение AST с base branch, пропуск неизменённых функций
 - **Кэширование** — хэш сигнатуры + тела функции, пропуск LLM при повторных запусках
 - **Конфиг-файл** — `.testgen.yml` для настроек на уровне проекта
 - **HTML-дашборд** — визуальный отчёт с coverage bar chart, загружается как артефакт GitHub Actions
 - **PR-комментарии** — каждый запуск оставляет отдельный комментарий с привязкой к коммиту (полная история)
 - **Дедупликация** — удаление дублирующихся table-driven тест-кейсов
+- **Structured feedback** — парсинг expected/got из тест-вывода для точного исправления LLM
+- **Interface analysis** — embedded interface resolution, interface satisfaction (тип X реализует Y)
+- **Package-level awareness** — LLM видит var/const из всего пакета, не переобъявляет их
+- **Auto mock injection** — автоматическая вставка mock-определений если LLM их пропустил
 - **Поддержка .env** — автоматическая загрузка переменных окружения из `.env` файла
 
 ## Быстрый старт
@@ -145,7 +149,7 @@ TESTGEN_PR_NUMBER=1
 | `--report html` | Сгенерировать HTML-дашборд | — |
 | `--no-cache` | Отключить кэширование | `false` |
 | `--no-smart-diff` | Отключить git-based сравнение функций | `false` |
-| `--coverage-target` | Целевой порог diff coverage (%) | `80` |
+| `--coverage` | Целевой порог diff coverage (%) | `80` |
 | `--github-token` | Токен для PR-комментария | — |
 | `--github-repo` | Репозиторий (owner/repo) | — |
 | `--pr-number` | Номер Pull Request | — |
@@ -171,7 +175,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26'
 
       - run: go build -o testgen-agent ./cmd/agent/
       - run: git fetch origin ${{ github.base_ref }} --depth=1
@@ -190,7 +194,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: testgen-report
-          path: testgen-report.html
+          path: testgen-report-*.html
 
       - name: Commit generated tests
         if: success()
@@ -245,7 +249,8 @@ testgen-agent/
 ├── internal/
 │   ├── diff/parser.go               # Парсер git diff
 │   ├── analyzer/
-│   │   ├── analyzer.go              # AST: функции, типы, кросс-файл, generics
+│   │   ├── analyzer.go              # AST: функции, типы, кросс-файл, generics, package vars
+│   │   ├── interfaces.go            # Interface satisfaction analysis
 │   │   └── concurrency.go           # Детекция concurrency-паттернов
 │   ├── prompt/
 │   │   ├── builder.go               # Конструктор промптов + extraction функций
@@ -256,7 +261,9 @@ testgen-agent/
 │   ├── coverage/
 │   │   ├── coverage.go              # Diff coverage
 │   │   └── filter.go                # Фильтрация неисполняемых строк
-│   ├── pruner/pruner.go             # Удаление падающих тестов
+│   ├── pruner/
+│   │   ├── pruner.go                # Удаление падающих тестов
+│   │   └── feedback.go              # Structured feedback (expected/got) для LLM
 │   ├── merger/merger.go             # AST-слияние тестов
 │   ├── mockgen/mockgen.go           # Генерация моков
 │   ├── mutation/mutation.go         # Мутационное тестирование
@@ -266,7 +273,7 @@ testgen-agent/
 │   ├── config/config.go             # Конфиг .testgen.yml
 │   ├── report/html.go               # HTML-дашборд
 │   └── github/commenter.go          # PR-комментарии
-├── testdata/sample-project/         # Тестовый проект (generics, concurrency, HTTP, env, time)
+├── testdata/sample-project/         # Тестовый проект (errors, json/map, interfaces, branches)
 ├── .github/workflows/testgen.yml    # GitHub Actions workflow
 ├── .testgen.yml                     # Конфиг проекта
 ├── .env.example                     # Пример переменных окружения
@@ -277,7 +284,7 @@ testgen-agent/
 
 ## Требования
 
-- Go 1.22+ (для поддержки generics в тестовых проектах)
+- Go 1.26+
 - Git
 - `goimports` (`go install golang.org/x/tools/cmd/goimports@latest`)
 - LLM API (OpenAI, Ollama, OpenRouter, Groq, или любой OpenAI-совместимый)
