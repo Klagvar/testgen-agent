@@ -90,10 +90,3 @@ func EnforcePromptBudget(req *TestGenRequest, budget TokenBudget) string {
 	return fmt.Sprintf("Prompt truncated (estimated %d tokens, limit %d, after truncation %d)",
 		estimated, available, newEstimate)
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

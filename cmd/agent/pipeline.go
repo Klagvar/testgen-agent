@@ -142,7 +142,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	if !opts.NoSmartDiff && len(affectedFuncs) > 0 {
 		affectedFuncs = filterBySmartDiff(affectedFuncs, opts.RepoPath, opts.BaseBranch, f.NewPath)
 		if len(affectedFuncs) == 0 {
-			return res
+			return nil
 		}
 	}
 
@@ -390,7 +390,7 @@ func filterBySmartDiff(funcs []analyzer.FuncInfo, repoPath, baseBranch, filePath
 
 // runGenerationLoop attempts to generate and validate tests up to maxRetries times.
 // LLM generates ONLY new test functions; they are merged with existing tests before validation.
-// Returns the merged code, the raw LLM output, last test output, and whether generation succeeded.
+// Returns (mergedCode, lastTestOutput, success).
 func runGenerationLoop(
 	client *llm.Client,
 	cfg llm.Config,
