@@ -16,16 +16,25 @@ const botMarker = "<!-- testgen-agent-report -->"
 
 // FileReport holds the report for a single file.
 type FileReport struct {
-	File           string   // file path
-	Functions      []string // tested functions
-	TestsTotal     int      // total generated tests
-	TestsPassed    int      // passed validation
-	TestsPruned    int      // pruned (failing)
-	DiffCoverage   float64  // diff coverage %
-	MutationScore  float64  // mutation score % (0 = not run)
-	MutationKilled int      // mutations killed
-	MutationTotal  int      // total mutations
-	Status         string   // "success", "partial", "failed"
+	File              string   // file path
+	Functions         []string // tested functions
+	TestsTotal        int      // total generated tests
+	TestsPassed       int      // passed validation
+	TestsPruned       int      // pruned (failing)
+	DiffCoverage      float64  // diff coverage %
+	BranchCoverage    float64  // branch coverage % within changed functions (−1 if not computed)
+	BranchesTotal     int      // total branches discovered
+	BranchesCovered   int      // branches whose body executed
+	ErrorPathCoverage float64  // error-path coverage % (−1 if not computed)
+	ErrorPathsTotal   int      // total `if err != nil` branches
+	ErrorPathsCovered int      // covered error paths
+	MutationScore     float64  // mutation score % (0 = not run)
+	MutationKilled    int      // mutations killed
+	MutationTotal     int      // total mutations
+	PromptTokens      int      // cumulative prompt tokens consumed for this file
+	CompletionTokens  int      // cumulative completion tokens consumed for this file
+	TokenEfficiency   float64  // (prompt+completion) / max(TestsPassed,1); 0 if no tokens recorded
+	Status            string   // "success", "partial", "failed"
 }
 
 // Report holds the full agent report.
@@ -146,6 +155,30 @@ func formatReport(r Report) string {
 		sb.WriteString(fmt.Sprintf("| Mutation score | 🧬 %.1f%% (%d/%d killed) |\n", score, totalKilled, totalMut))
 	}
 
+	// Aggregated quality metrics (branch / error-path / token efficiency).
+	bTotal, bCov, ePTotal, ePCov := 0, 0, 0, 0
+	totalPromptTok, totalCompTok := 0, 0
+	for _, f := range r.Files {
+		bTotal += f.BranchesTotal
+		bCov += f.BranchesCovered
+		ePTotal += f.ErrorPathsTotal
+		ePCov += f.ErrorPathsCovered
+		totalPromptTok += f.PromptTokens
+		totalCompTok += f.CompletionTokens
+	}
+	if bTotal > 0 {
+		pct := float64(bCov) / float64(bTotal) * 100
+		sb.WriteString(fmt.Sprintf("| Branch coverage | 🌳 %.1f%% (%d/%d) |\n", pct, bCov, bTotal))
+	}
+	if ePTotal > 0 {
+		pct := float64(ePCov) / float64(ePTotal) * 100
+		sb.WriteString(fmt.Sprintf("| Error-path coverage | 🛡️ %.1f%% (%d/%d) |\n", pct, ePCov, ePTotal))
+	}
+	if r.TotalValidated > 0 && (totalPromptTok+totalCompTok) > 0 {
+		eff := float64(totalPromptTok+totalCompTok) / float64(r.TotalValidated)
+		sb.WriteString(fmt.Sprintf("| Token efficiency | 🪙 %.0f tokens / passing test |\n", eff))
+	}
+
 	sb.WriteString(fmt.Sprintf("| Duration | ⏱️ %s |\n", r.Duration.Round(time.Second)))
 	sb.WriteString("\n")
 
@@ -157,8 +190,8 @@ func formatReport(r Report) string {
 			sb.WriteString("<details>\n<summary>Click to expand file details</summary>\n\n")
 		}
 
-		sb.WriteString("| File | Functions | Generated | Validated | Diff Cov | Status |\n")
-		sb.WriteString("|------|-----------|-----------|-----------|----------|--------|\n")
+		sb.WriteString("| File | Functions | Generated | Validated | Diff Cov | Branch Cov | Err-path Cov | Status |\n")
+		sb.WriteString("|------|-----------|-----------|-----------|----------|------------|--------------|--------|\n")
 
 		for _, f := range r.Files {
 			funcs := strings.Join(f.Functions, ", ")
@@ -178,9 +211,17 @@ func formatReport(r Report) string {
 			if f.DiffCoverage > 0 {
 				covStr = fmt.Sprintf("%.1f%%", f.DiffCoverage)
 			}
+			branchStr := "—"
+			if f.BranchesTotal > 0 {
+				branchStr = fmt.Sprintf("%.1f%%", f.BranchCoverage)
+			}
+			errPathStr := "—"
+			if f.ErrorPathsTotal > 0 {
+				errPathStr = fmt.Sprintf("%.1f%%", f.ErrorPathCoverage)
+			}
 
-			sb.WriteString(fmt.Sprintf("| `%s` | %s | %d | %d | %s | %s |\n",
-				f.File, funcs, f.TestsTotal, f.TestsPassed, covStr, statusEmoji))
+			sb.WriteString(fmt.Sprintf("| `%s` | %s | %d | %d | %s | %s | %s | %s |\n",
+				f.File, funcs, f.TestsTotal, f.TestsPassed, covStr, branchStr, errPathStr, statusEmoji))
 		}
 
 		if len(r.Files) > 3 {

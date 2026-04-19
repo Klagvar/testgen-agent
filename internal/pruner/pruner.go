@@ -17,6 +17,8 @@ import (
 	"go/token"
 	"regexp"
 	"strings"
+
+	"github.com/gizatulin/testgen-agent/internal/testjson"
 )
 
 // TestResult holds the result of a single test.
@@ -25,26 +27,64 @@ type TestResult struct {
 	Passed bool
 }
 
-// ParseTestOutput parses go test -v output and returns results
-// for each test (including sub-tests).
+// Pre-compiled regexes for the legacy textual fallback parser.
+var (
+	legacyPassRe = regexp.MustCompile(`--- PASS: (\S+)\s`)
+	legacyFailRe = regexp.MustCompile(`--- FAIL: (\S+)\s`)
+)
+
+// ParseTestOutput parses go test output and returns results for each test
+// (including sub-tests).
+//
+// The parser first tries to interpret the input as a stream of `go test -json`
+// events (which is the robust path: each event carries an explicit Test name,
+// so parallel / interleaved output is handled correctly). If the input contains
+// no JSON events, the parser falls back to the legacy `go test -v` regex parser
+// so that older callers and tests continue to work.
 func ParseTestOutput(output string) []TestResult {
+	if looksLikeJSONStream(output) {
+		parsed, err := testjson.Parse(strings.NewReader(output))
+		if err == nil && parsed.HasEvents() {
+			return fromJSONEvents(parsed.Events)
+		}
+	}
+	return parseTestOutputLegacy(output)
+}
+
+// fromJSONEvents converts testjson.Aggregate output to []TestResult while
+// dropping non-terminal events (only pass/fail/skip produce a result).
+func fromJSONEvents(events []testjson.Event) []TestResult {
+	aggregated := testjson.Aggregate(events)
+	out := make([]TestResult, 0, len(aggregated))
+	for _, r := range aggregated {
+		if r.Skipped {
+			// Skipped tests do not affect pruning decisions.
+			continue
+		}
+		out = append(out, TestResult{Name: r.Name, Passed: r.Passed})
+	}
+	return out
+}
+
+// parseTestOutputLegacy extracts test results from the textual `go test -v`
+// output. Retained so that tools, fixtures, and existing tests that still feed
+// the text format keep working.
+func parseTestOutputLegacy(output string) []TestResult {
 	var results []TestResult
-
-	// go test -v output patterns:
-	// --- PASS: TestFoo (0.00s)
-	// --- FAIL: TestFoo/sub_case (0.00s)
-	passRe := regexp.MustCompile(`--- PASS: (\S+)\s`)
-	failRe := regexp.MustCompile(`--- FAIL: (\S+)\s`)
-
-	for _, match := range passRe.FindAllStringSubmatch(output, -1) {
+	for _, match := range legacyPassRe.FindAllStringSubmatch(output, -1) {
 		results = append(results, TestResult{Name: match[1], Passed: true})
 	}
-
-	for _, match := range failRe.FindAllStringSubmatch(output, -1) {
+	for _, match := range legacyFailRe.FindAllStringSubmatch(output, -1) {
 		results = append(results, TestResult{Name: match[1], Passed: false})
 	}
-
 	return results
+}
+
+// looksLikeJSONStream reports whether the input appears to be a go test -json
+// stream. Detection is intentionally cheap: a stream of events always contains
+// at least one line starting with `{"Action":`.
+func looksLikeJSONStream(output string) bool {
+	return strings.Contains(output, `{"Action":`) || strings.Contains(output, `{"Time":`)
 }
 
 // FailingTopLevel returns the names of top-level test functions
