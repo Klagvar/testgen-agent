@@ -1,0 +1,29 @@
+# Example dataset for the multi-repository benchmark harness.
+#
+# Run with:
+#   benchmark --dataset testdata/dataset-example.yaml --list
+#
+# To actually execute a benchmark (requires internet + an agent binary):
+#   benchmark --dataset testdata/dataset-example.yaml \
+#             --agent ./bin/testgen-agent \
+#             --model qwen3-coder:30b \
+#             --out  ./benchmark-results
+#
+# This file is only a shape reference; the actual repositories / commits
+# used for the thesis evaluation belong to the experimental dataset and
+# are not part of this repository.
+
+workdir: ./benchmark-checkouts
+
+repos:
+  - name: example-repo-a
+    url: https://github.com/example/repo-a.git
+    base: v1.0.0
+    head: main
+  - name: example-repo-b
+    url: https://github.com/example/repo-b.git
+    base: main
+    head: HEAD
+    subdir: pkg/core
+    exclude:
+      - "internal/gen/**"
