@@ -65,6 +65,7 @@ jobs:
             --base "origin/${{ github.base_ref }}" `
             --api-url http://localhost:11434/v1 `
             --model qwen3-coder:30b `
+            --report json `
             --github-token "${{ secrets.GITHUB_TOKEN }}" `
             --github-repo "${{ github.repository }}" `
             --pr-number ${{ github.event.pull_request.number }}
@@ -73,8 +74,17 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: testgen-report
+          name: testgen-report-html
           path: testgen-report-*.html
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload JSON report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testgen-report-json
+          path: testgen-report-*.json
           retention-days: 30
           if-no-files-found: ignore
 
