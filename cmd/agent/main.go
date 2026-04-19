@@ -56,6 +56,16 @@ func main() {
 	raceDetection := flag.Bool("race", false, "Enable race detection for concurrent tests")
 	reportFormat := flag.String("report", "", "Generate report: html, json (empty = no report)")
 
+	// Ablation knobs — disable individual pipeline components so that
+	// experiments can isolate each component's contribution to the final
+	// metrics. Default (all flags false) means "full pipeline".
+	noTypes := flag.Bool("no-types", false, "Ablation: disable go/types-based analysis (use syntactic fallback)")
+	noStructuredFeedback := flag.Bool("no-structured-feedback", false, "Ablation: send raw stderr to the repair prompt")
+	noPruning := flag.Bool("no-pruning", false, "Ablation: skip pruning of failing tests")
+	noMutation := flag.Bool("no-mutation", false, "Ablation: force-disable mutation testing (equivalent to omitting --mutation)")
+	noNaturalness := flag.Bool("no-naturalness", false, "Ablation: skip naturalness analysis of generated tests")
+	ablationLabel := flag.String("ablation-config", "", "Ablation: record this label in the JSON report (e.g. full, no-types, no-pruning)")
+
 	flag.Parse()
 
 	// Support positional args for backward compatibility
@@ -137,26 +147,35 @@ func main() {
 		cfgTimeout = defaultTimeoutSec
 	}
 
+	// Honour --no-mutation irrespective of YAML config (ablation precedence).
+	if *noMutation {
+		*mutationTest = false
+	}
+
 	opts := pipelineOpts{
-		RepoPath:        *repoPath,
-		BaseBranch:      *baseBranch,
-		OutDir:          *outDir,
-		APIKey:          *apiKey,
-		BaseURL:         *baseURL,
-		Model:           *model,
-		DryRun:          *dryRun,
-		NoValidate:      *noValidate,
-		NoCoverage:      *noCoverage,
-		NoSmartDiff:     *noSmartDiff,
-		RaceDetection:   *raceDetection,
-		MutationTest:    *mutationTest,
-		CoverageTarget:  *coverageTarget,
-		MaxRetries:      cfgRetries,
-		MaxCoverageIter: cfgCoverIter,
-		TimeoutSeconds:  cfgTimeout,
-		ProjectCfg:      projectCfg,
-		FnCache:         fnCache,
-		TypedPkgCache:   newTypedPkgCache(),
+		RepoPath:                 *repoPath,
+		BaseBranch:               *baseBranch,
+		OutDir:                   *outDir,
+		APIKey:                   *apiKey,
+		BaseURL:                  *baseURL,
+		Model:                    *model,
+		DryRun:                   *dryRun,
+		NoValidate:               *noValidate,
+		NoCoverage:               *noCoverage,
+		NoSmartDiff:              *noSmartDiff,
+		RaceDetection:            *raceDetection,
+		MutationTest:             *mutationTest,
+		CoverageTarget:           *coverageTarget,
+		MaxRetries:               cfgRetries,
+		MaxCoverageIter:          cfgCoverIter,
+		TimeoutSeconds:           cfgTimeout,
+		ProjectCfg:               projectCfg,
+		FnCache:                  fnCache,
+		TypedPkgCache:            newTypedPkgCache(),
+		DisableTypes:             *noTypes,
+		DisableStructuredFeedback: *noStructuredFeedback,
+		DisablePruning:           *noPruning,
+		DisableNaturalness:       *noNaturalness,
 	}
 
 	for _, f := range files {
@@ -325,7 +344,7 @@ func main() {
 		// Map per-file reports into the JSON schema.
 		jsonFiles := make([]report.JSONFile, 0, len(fileReports))
 		for _, fr := range fileReports {
-			jsonFiles = append(jsonFiles, report.JSONFile{
+			jf := report.JSONFile{
 				File:             fr.File,
 				Functions:        fr.Functions,
 				Status:           fr.Status,
@@ -345,7 +364,20 @@ func main() {
 				PromptTokens:     fr.PromptTokens,
 				CompletionTokens: fr.CompletionTokens,
 				TokenEfficiency:  fr.TokenEfficiency,
-			})
+			}
+			if fr.Naturalness != nil {
+				jf.Naturalness = &report.JSONNaturalness{
+					TestCount:              fr.Naturalness.TestCount,
+					AssertionRatio:         fr.Naturalness.AssertionRatio,
+					NoAssertionsPct:        fr.Naturalness.NoAssertionsPct,
+					DuplicateAssertionsPct: fr.Naturalness.DuplicateAssertionsPct,
+					NilOnlyAssertionsPct:   fr.Naturalness.NilOnlyAssertionsPct,
+					ErrorAssertionsPct:     fr.Naturalness.ErrorAssertionsPct,
+					TestNameScore:          fr.Naturalness.TestNameScore,
+					VarNameScore:           fr.Naturalness.VarNameScore,
+				}
+			}
+			jsonFiles = append(jsonFiles, jf)
 		}
 
 		run := report.JSONRun{
@@ -359,18 +391,23 @@ func main() {
 			Files:         jsonFiles,
 			Totals:        report.BuildTotals(jsonFiles),
 			Config: &report.JSONConfig{
-				CoverageTarget:    *coverageTarget,
-				MaxRetries:        defaultMaxRetries,
-				MaxCoverageIter:   defaultMaxCoverIter,
-				RaceDetection:     *raceDetection || projectCfg.Race,
-				MutationEnabled:   *mutationTest,
-				CacheEnabled:      !*noCache,
-				SmartDiffEnabled:  !*noSmartDiff,
-				CoverageAnalysis:  !*noCoverage,
-				ValidationEnabled: !*noValidate,
-				TimeoutSeconds:    defaultTimeoutSec,
-				MaxContextTokens:  projectCfg.MaxContextTokens,
-				ExcludeFilesCount: len(projectCfg.Exclude),
+				CoverageTarget:            *coverageTarget,
+				MaxRetries:                defaultMaxRetries,
+				MaxCoverageIter:           defaultMaxCoverIter,
+				RaceDetection:             *raceDetection || projectCfg.Race,
+				MutationEnabled:           *mutationTest,
+				CacheEnabled:              !*noCache,
+				SmartDiffEnabled:          !*noSmartDiff,
+				CoverageAnalysis:          !*noCoverage,
+				ValidationEnabled:         !*noValidate,
+				TimeoutSeconds:            defaultTimeoutSec,
+				MaxContextTokens:          projectCfg.MaxContextTokens,
+				ExcludeFilesCount:         len(projectCfg.Exclude),
+				AblationConfig:            *ablationLabel,
+				TypesEnabled:              !*noTypes,
+				StructuredFeedbackEnabled: !*noStructuredFeedback,
+				PruningEnabled:            !*noPruning,
+				NaturalnessEnabled:        !*noNaturalness,
 			},
 		}
 		run.Totals.TestsCached = totalCached

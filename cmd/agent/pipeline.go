@@ -19,6 +19,7 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/merger"
 	"github.com/gizatulin/testgen-agent/internal/mockgen"
 	"github.com/gizatulin/testgen-agent/internal/mutation"
+	"github.com/gizatulin/testgen-agent/internal/naturalness"
 	"github.com/gizatulin/testgen-agent/internal/patterns"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
 	"github.com/gizatulin/testgen-agent/internal/pruner"
@@ -49,6 +50,14 @@ type pipelineOpts struct {
 	// repeated lookups within the same run do not pay the `go/packages.Load`
 	// cost more than once per directory.
 	TypedPkgCache *typedPkgCache
+
+	// Ablation knobs — each disables a specific pipeline component so
+	// experiments can isolate its contribution. Default values (all
+	// false) preserve the full pipeline.
+	DisableTypes              bool // skip go/types analysis, fall back to syntactic
+	DisableStructuredFeedback bool // pass raw stderr to repair prompt
+	DisablePruning            bool // do not attempt to salvage tests via pruning
+	DisableNaturalness        bool // skip naturalness analysis of generated tests
 }
 
 // typedPkgCache memoises typed.Load results across processFile invocations.
@@ -130,7 +139,12 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	// Attempt to load a type-checked view of the same package. Used where
 	// precise, type-aware analysis is essential (interface satisfaction and
 	// call-graph resolution); syntactic fallbacks are used if it fails.
-	typedPkg := opts.TypedPkgCache.get(pkgDir)
+	// --no-types bypasses the cache entirely to simulate running without
+	// type-checked analysis (ablation study).
+	var typedPkg *typed.Package
+	if !opts.DisableTypes {
+		typedPkg = opts.TypedPkgCache.get(pkgDir)
+	}
 
 	if tag := analyzer.DetectBuildTag(readFileString(fullPath)); tag != "" {
 		fmt.Printf("     ⚠️  Build constraint: %s (may not compile on all platforms)\n", tag)
@@ -294,12 +308,19 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	}
 
 	if !success {
-		success = tryPrune(genResult.Code, genResult.TestOutput, testFilePath, opts,
-			affectedFuncs, usedTypes, f.NewPath, cfg.Model)
-		if success {
-			res.Generated++
-			res.Validated++
+		if opts.DisablePruning {
+			// Ablation: skip the pruning safety net entirely so the run
+			// reflects raw first-pass quality of the LLM.
+			fmt.Printf("     ⏭️  Pruning disabled by --no-pruning\n")
 		} else {
+			success = tryPrune(genResult.Code, genResult.TestOutput, testFilePath, opts,
+				affectedFuncs, usedTypes, f.NewPath, cfg.Model)
+			if success {
+				res.Generated++
+				res.Validated++
+			}
+		}
+		if !success {
 			res.Report = buildFileReport(reportInputs{
 				FilePath:         f.NewPath,
 				Funcs:            affectedFuncs,
@@ -330,6 +351,12 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	// Branch / error-path coverage (derived from the same coverage profile)
 	branchRes := calculateBranchMetrics(fullPath, affectedFuncs, covLoop.Blocks)
 
+	// Naturalness (reads the final test file; cheap, no compilation)
+	var natRes *naturalness.Result
+	if !opts.DisableNaturalness {
+		natRes = calculateNaturalness(testFilePath, affectedFuncs)
+	}
+
 	// Mutation testing
 	if opts.MutationTest && success && !opts.DryRun {
 		mutScore, mutKilled, mutTotal := runMutationTesting(affectedFuncs, fullPath)
@@ -350,6 +377,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		MutKilled:        res.MutationKilled,
 		MutTotal:         res.MutationTotal,
 		BranchResult:     branchRes,
+		Naturalness:      natRes,
 		PromptTokens:     res.PromptTokens,
 		CompletionTokens: res.CompletionTokens,
 	})
@@ -575,7 +603,7 @@ func runGenerationLoop(
 		} else {
 			var failingNames []string
 			var compactFB string
-			if lastTestOutput != "" {
+			if lastTestOutput != "" && !opts.DisableStructuredFeedback {
 				testResults := pruner.ParseTestOutput(lastTestOutput)
 				failingNames = pruner.FailingTopLevel(testResults)
 				if len(failingNames) > 0 {
@@ -832,6 +860,7 @@ type reportInputs struct {
 	MutKilled        int
 	MutTotal         int
 	BranchResult     branchcov.Result
+	Naturalness      *naturalness.Result
 	PromptTokens     int
 	CompletionTokens int
 }
@@ -856,7 +885,7 @@ func buildFileReport(in reportInputs) ghub.FileReport {
 		tokenEff = float64(totalTokens) / float64(in.Validated)
 	}
 
-	return ghub.FileReport{
+	fr := ghub.FileReport{
 		File:              in.FilePath,
 		Functions:         funcNames,
 		TestsTotal:        in.Generated,
@@ -876,6 +905,44 @@ func buildFileReport(in reportInputs) ghub.FileReport {
 		TokenEfficiency:   tokenEff,
 		Status:            status,
 	}
+	if in.Naturalness != nil && in.Naturalness.TestCount > 0 {
+		fr.Naturalness = &ghub.Naturalness{
+			TestCount:              in.Naturalness.TestCount,
+			AssertionRatio:         in.Naturalness.AssertionRatio,
+			NoAssertionsPct:        in.Naturalness.NoAssertionsPct,
+			DuplicateAssertionsPct: in.Naturalness.DuplicateAssertionsPct,
+			NilOnlyAssertionsPct:   in.Naturalness.NilOnlyAssertionsPct,
+			ErrorAssertionsPct:     in.Naturalness.ErrorAssertionsPct,
+			TestNameScore:          in.Naturalness.TestNameScore,
+			VarNameScore:           in.Naturalness.VarNameScore,
+		}
+	}
+	return fr
+}
+
+// calculateNaturalness analyses the generated test file in-place. We
+// deliberately swallow parse errors: a malformed test file would already
+// have been rejected by the validator, and a zero Result with an error
+// log is enough for the operator.
+func calculateNaturalness(testFilePath string, funcs []analyzer.FuncInfo) *naturalness.Result {
+	if testFilePath == "" {
+		return nil
+	}
+	if _, err := os.Stat(testFilePath); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(funcs))
+	for _, fn := range funcs {
+		names = append(names, fn.Name)
+	}
+	r, err := naturalness.Analyze(testFilePath, names)
+	if err != nil {
+		return nil
+	}
+	if r.TestCount == 0 {
+		return nil
+	}
+	return &r
 }
 
 // calculateBranchMetrics derives branch- and error-path coverage for the
