@@ -34,7 +34,22 @@ type FileReport struct {
 	PromptTokens      int      // cumulative prompt tokens consumed for this file
 	CompletionTokens  int      // cumulative completion tokens consumed for this file
 	TokenEfficiency   float64  // (prompt+completion) / max(TestsPassed,1); 0 if no tokens recorded
+	Naturalness       *Naturalness // optional, populated only when computed
 	Status            string   // "success", "partial", "failed"
+}
+
+// Naturalness mirrors naturalness.Result but avoids cross-package imports
+// from the reporting layer. Populated per-file by the pipeline when
+// naturalness analysis is enabled.
+type Naturalness struct {
+	TestCount              int
+	AssertionRatio         float64
+	NoAssertionsPct        float64
+	DuplicateAssertionsPct float64
+	NilOnlyAssertionsPct   float64
+	ErrorAssertionsPct     float64
+	TestNameScore          float64
+	VarNameScore           float64
 }
 
 // Report holds the full agent report.
@@ -181,6 +196,45 @@ func formatReport(r Report) string {
 
 	sb.WriteString(fmt.Sprintf("| Duration | ⏱️ %s |\n", r.Duration.Round(time.Second)))
 	sb.WriteString("\n")
+
+	// Naturalness summary: averaged across files that reported metrics.
+	var natAgg struct {
+		N     int
+		Ratio float64
+		NoA   float64
+		Dup   float64
+		Nil   float64
+		Err   float64
+		TN    float64
+		VN    float64
+	}
+	for _, f := range r.Files {
+		if f.Naturalness == nil || f.Naturalness.TestCount == 0 {
+			continue
+		}
+		natAgg.N++
+		natAgg.Ratio += f.Naturalness.AssertionRatio
+		natAgg.NoA += f.Naturalness.NoAssertionsPct
+		natAgg.Dup += f.Naturalness.DuplicateAssertionsPct
+		natAgg.Nil += f.Naturalness.NilOnlyAssertionsPct
+		natAgg.Err += f.Naturalness.ErrorAssertionsPct
+		natAgg.TN += f.Naturalness.TestNameScore
+		natAgg.VN += f.Naturalness.VarNameScore
+	}
+	if natAgg.N > 0 {
+		d := float64(natAgg.N)
+		sb.WriteString("### 🧾 Naturalness\n\n")
+		sb.WriteString("| Metric | Value |\n")
+		sb.WriteString("|--------|-------|\n")
+		sb.WriteString(fmt.Sprintf("| Assertions per test | %.2f |\n", natAgg.Ratio/d))
+		sb.WriteString(fmt.Sprintf("| Tests without assertions | %.1f%% |\n", natAgg.NoA/d))
+		sb.WriteString(fmt.Sprintf("| Tests with duplicate assertions | %.1f%% |\n", natAgg.Dup/d))
+		sb.WriteString(fmt.Sprintf("| Nil-only assertions | %.1f%% |\n", natAgg.Nil/d))
+		sb.WriteString(fmt.Sprintf("| Error assertions | %.1f%% |\n", natAgg.Err/d))
+		sb.WriteString(fmt.Sprintf("| Test-name closeness | %.1f / 100 |\n", natAgg.TN/d))
+		sb.WriteString(fmt.Sprintf("| Variable-name closeness | %.1f / 100 |\n", natAgg.VN/d))
+		sb.WriteString("\n")
+	}
 
 	// Per-file details (collapsible)
 	if len(r.Files) > 0 {

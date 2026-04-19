@@ -55,6 +55,11 @@ type JSONTotals struct {
 	// TokenEfficiency is tokens / passing test. Reported only when both
 	// tokens and validated tests are present.
 	TokenEfficiency *float64 `json:"token_efficiency_tokens_per_test,omitempty"`
+
+	// Naturalness aggregates per-file JSONNaturalness as straight means
+	// over files with at least one top-level test. Nil when naturalness
+	// was not computed for any file in the run.
+	Naturalness *JSONNaturalness `json:"naturalness,omitempty"`
 }
 
 // JSONFile mirrors github.FileReport but trims presentation-only fields.
@@ -78,22 +83,48 @@ type JSONFile struct {
 	PromptTokens     int      `json:"prompt_tokens,omitempty"`
 	CompletionTokens int      `json:"completion_tokens,omitempty"`
 	TokenEfficiency  float64  `json:"token_efficiency_tokens_per_test,omitempty"`
+	// Naturalness is omitted when the pipeline skipped naturalness analysis
+	// (e.g. the test file failed to parse) to keep the JSON schema
+	// distinguishable from "analysed but scored zero".
+	Naturalness *JSONNaturalness `json:"naturalness,omitempty"`
+}
+
+// JSONNaturalness mirrors naturalness.Result but uses value types so that
+// downstream tooling does not have to reason about absence-vs-zero for
+// every individual metric.
+type JSONNaturalness struct {
+	TestCount              int     `json:"test_count"`
+	AssertionRatio         float64 `json:"assertion_ratio"`
+	NoAssertionsPct        float64 `json:"no_assertions_pct"`
+	DuplicateAssertionsPct float64 `json:"duplicate_assertions_pct"`
+	NilOnlyAssertionsPct   float64 `json:"nil_only_assertions_pct"`
+	ErrorAssertionsPct     float64 `json:"error_assertions_pct"`
+	TestNameScore          float64 `json:"test_name_score"`
+	VarNameScore           float64 `json:"var_name_score"`
 }
 
 // JSONConfig captures the knobs that affect reproducibility of a run.
 type JSONConfig struct {
-	CoverageTarget     float64 `json:"coverage_target"`
-	MaxRetries         int     `json:"max_retries"`
-	MaxCoverageIter    int     `json:"max_coverage_iter"`
-	RaceDetection      bool    `json:"race_detection"`
-	MutationEnabled    bool    `json:"mutation_enabled"`
-	CacheEnabled       bool    `json:"cache_enabled"`
-	SmartDiffEnabled   bool    `json:"smart_diff_enabled"`
-	CoverageAnalysis   bool    `json:"coverage_analysis"`
-	ValidationEnabled  bool    `json:"validation_enabled"`
-	TimeoutSeconds     int     `json:"timeout_seconds"`
-	MaxContextTokens   int     `json:"max_context_tokens,omitempty"`
-	ExcludeFilesCount  int     `json:"exclude_files_count,omitempty"`
+	CoverageTarget    float64 `json:"coverage_target"`
+	MaxRetries        int     `json:"max_retries"`
+	MaxCoverageIter   int     `json:"max_coverage_iter"`
+	RaceDetection     bool    `json:"race_detection"`
+	MutationEnabled   bool    `json:"mutation_enabled"`
+	CacheEnabled      bool    `json:"cache_enabled"`
+	SmartDiffEnabled  bool    `json:"smart_diff_enabled"`
+	CoverageAnalysis  bool    `json:"coverage_analysis"`
+	ValidationEnabled bool    `json:"validation_enabled"`
+	TimeoutSeconds    int     `json:"timeout_seconds"`
+	MaxContextTokens  int     `json:"max_context_tokens,omitempty"`
+	ExcludeFilesCount int     `json:"exclude_files_count,omitempty"`
+
+	// Ablation knobs. Name the configuration that produced this run so
+	// the aggregator can group results by human-readable labels.
+	AblationConfig            string `json:"ablation_config,omitempty"`
+	TypesEnabled              bool   `json:"types_enabled"`
+	StructuredFeedbackEnabled bool   `json:"structured_feedback_enabled"`
+	PruningEnabled            bool   `json:"pruning_enabled"`
+	NaturalnessEnabled        bool   `json:"naturalness_enabled"`
 }
 
 // GenerateJSON writes the JSON experimental record next to other reports and
@@ -159,6 +190,35 @@ func BuildTotals(files []JSONFile) JSONTotals {
 	if t.TestsValidated > 0 && (t.PromptTokens+t.CompletionTokens) > 0 {
 		eff := float64(t.PromptTokens+t.CompletionTokens) / float64(t.TestsValidated)
 		t.TokenEfficiency = floatPtr(eff)
+	}
+
+	// Aggregate naturalness across files that reported it.
+	var natN int
+	var agg JSONNaturalness
+	for _, f := range files {
+		if f.Naturalness == nil || f.Naturalness.TestCount == 0 {
+			continue
+		}
+		natN++
+		agg.TestCount += f.Naturalness.TestCount
+		agg.AssertionRatio += f.Naturalness.AssertionRatio
+		agg.NoAssertionsPct += f.Naturalness.NoAssertionsPct
+		agg.DuplicateAssertionsPct += f.Naturalness.DuplicateAssertionsPct
+		agg.NilOnlyAssertionsPct += f.Naturalness.NilOnlyAssertionsPct
+		agg.ErrorAssertionsPct += f.Naturalness.ErrorAssertionsPct
+		agg.TestNameScore += f.Naturalness.TestNameScore
+		agg.VarNameScore += f.Naturalness.VarNameScore
+	}
+	if natN > 0 {
+		d := float64(natN)
+		agg.AssertionRatio /= d
+		agg.NoAssertionsPct /= d
+		agg.DuplicateAssertionsPct /= d
+		agg.NilOnlyAssertionsPct /= d
+		agg.ErrorAssertionsPct /= d
+		agg.TestNameScore /= d
+		agg.VarNameScore /= d
+		t.Naturalness = &agg
 	}
 	return t
 }
