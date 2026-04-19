@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gizatulin/testgen-agent/internal/testjson"
 )
 
 // Result holds the test validation outcome.
@@ -122,18 +124,7 @@ func Validate(repoDir string, testFile string, timeoutSec ...int) *Result {
 	result.TestOutput = testOutput
 	result.Duration = time.Since(start)
 
-	if testErr == "" {
-		result.TestsOK = true
-		result.Passed = countTests(testOutput, "PASS")
-		return result
-	}
-
-	// Parse failing test results
-	result.TestsOK = false
-	result.TestError = testErr
-	result.Passed = countTests(testOutput, "PASS")
-	result.Failed = countTests(testOutput, "FAIL")
-
+	populateTestCounts(result, testOutput, testErr)
 	return result
 }
 
@@ -172,18 +163,78 @@ func ValidateWithRace(repoDir string, testFile string) *Result {
 		result.RaceDetails = extractRaceDetails(testOutput)
 	}
 
-	if testErr == "" {
-		result.TestsOK = true
-		result.Passed = countTests(testOutput, "PASS")
-		return result
+	populateTestCounts(result, testOutput, testErr)
+	return result
+}
+
+// populateTestCounts fills the Passed/Failed/TestsOK fields by parsing the
+// raw test output. It prefers the go test -json event stream (which is what
+// runGoTest / runGoTestRace now produce) and falls back to the legacy textual
+// counter when JSON parsing yields nothing (for example when only build
+// diagnostics were emitted).
+func populateTestCounts(result *Result, testOutput, testErr string) {
+	if parsed, err := testjson.Parse(strings.NewReader(testOutput)); err == nil && parsed.HasEvents() {
+		passed, failed := 0, 0
+		for _, r := range testjson.Aggregate(parsed.Events) {
+			if r.Skipped {
+				continue
+			}
+			if r.Passed {
+				passed++
+			} else {
+				failed++
+			}
+		}
+		result.Passed = passed
+		result.Failed = failed
+		result.TestsOK = (failed == 0 && testErr == "")
+		if !result.TestsOK {
+			if testErr != "" {
+				result.TestError = testErr
+			} else {
+				result.TestError = summariseFailingEvents(parsed.Events)
+			}
+		}
+		return
 	}
 
-	result.TestsOK = false
-	result.TestError = testErr
 	result.Passed = countTests(testOutput, "PASS")
 	result.Failed = countTests(testOutput, "FAIL")
+	result.TestsOK = (testErr == "" && result.Failed == 0)
+	if !result.TestsOK {
+		result.TestError = testErr
+		if result.TestError == "" {
+			result.TestError = testOutput
+		}
+	}
+}
 
-	return result
+// summariseFailingEvents produces a short human-readable summary of the
+// failing tests in a testjson stream. Used for surfacing errors when go test
+// exited cleanly via JSON (so there is no raw stderr to quote).
+func summariseFailingEvents(events []testjson.Event) string {
+	var lines []string
+	for _, r := range testjson.Aggregate(events) {
+		if r.Skipped || r.Passed {
+			continue
+		}
+		// First output line usually carries the most informative message.
+		msg := ""
+		for _, o := range r.Output {
+			trimmed := strings.TrimSpace(o)
+			if trimmed == "" || strings.HasPrefix(trimmed, "=== ") || strings.HasPrefix(trimmed, "--- ") {
+				continue
+			}
+			msg = trimmed
+			break
+		}
+		if msg == "" {
+			lines = append(lines, "FAIL "+r.Name)
+		} else {
+			lines = append(lines, "FAIL "+r.Name+": "+msg)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // runGoTestRace runs go test -race and returns the output.
@@ -201,7 +252,10 @@ func runGoTestRace(moduleRoot, pkgDir string) (output string, errMsg string) {
 		pkgPath = "."
 	}
 
-	cmd := exec.Command("go", "test", "-race", "-v", "-count=1", "-timeout", "60s", pkgPath)
+	// Use -json for a structured, parallel-safe event stream. -json implies -v,
+	// so every test event (including output) is emitted to stdout as a JSON
+	// object per line.
+	cmd := exec.Command("go", "test", "-race", "-json", "-count=1", "-timeout", "60s", pkgPath)
 	cmd.Dir = moduleRoot
 
 	out, err := cmd.CombinedOutput()
@@ -283,7 +337,8 @@ func runGoTest(moduleRoot, pkgDir string, timeoutSec int) (output string, errMsg
 		pkgPath = "."
 	}
 
-	cmd := exec.Command("go", "test", "-v", "-count=1", "-timeout", fmt.Sprintf("%ds", timeoutSec), pkgPath)
+	// -json produces one JSON event per line and is robust to parallel tests.
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-timeout", fmt.Sprintf("%ds", timeoutSec), pkgPath)
 	cmd.Dir = moduleRoot
 
 	out, err := cmd.CombinedOutput()
@@ -296,34 +351,53 @@ func runGoTest(moduleRoot, pkgDir string, timeoutSec int) (output string, errMsg
 }
 
 // extractTestErrors extracts error messages from go test output.
+//
+// With the switch to `go test -json`, most of the signal is already structured
+// and is consumed by populateTestCounts. This helper remains as a best-effort
+// fallback for build-time diagnostics (compile errors, "build failed" lines)
+// that go test still emits as plain text before the JSON stream begins.
 func extractTestErrors(output string) string {
-	var errors []string
-	lines := strings.Split(output, "\n")
+	// Prefer the structured path: if the output is a test2json stream,
+	// summarise failing events directly instead of grepping text.
+	if parsed, err := testjson.Parse(strings.NewReader(output)); err == nil {
+		if parsed.HasEvents() {
+			summary := summariseFailingEvents(parsed.Events)
+			// Prepend any non-JSON diagnostics (e.g. compile errors).
+			if nj := strings.TrimSpace(parsed.NonJSON); nj != "" {
+				if summary == "" {
+					return nj
+				}
+				return nj + "\n" + summary
+			}
+			if summary != "" {
+				return summary
+			}
+		}
+		if nj := strings.TrimSpace(parsed.NonJSON); nj != "" {
+			return nj
+		}
+	}
 
-	for _, line := range lines {
+	// Legacy textual fallback, retained for `go test -v` output.
+	var errors []string
+	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
-		// Compilation errors
 		if strings.Contains(trimmed, ": ") && (strings.Contains(trimmed, ".go:") || strings.Contains(trimmed, "cannot") || strings.Contains(trimmed, "undefined")) {
 			errors = append(errors, trimmed)
 		}
-		// Failing tests
 		if strings.HasPrefix(trimmed, "--- FAIL:") {
 			errors = append(errors, trimmed)
 		}
-		// t.Errorf / t.Fatalf output
 		if strings.Contains(trimmed, "Error Trace:") || strings.Contains(trimmed, "Error:") {
 			errors = append(errors, trimmed)
 		}
-		// Direct test errors
 		if strings.HasPrefix(trimmed, "FAIL") {
 			errors = append(errors, trimmed)
 		}
 	}
-
 	if len(errors) == 0 {
-		return output // Return full output if we couldn't parse it
+		return output
 	}
-
 	return strings.Join(errors, "\n")
 }
 

@@ -156,6 +156,7 @@ func main() {
 		TimeoutSeconds:  cfgTimeout,
 		ProjectCfg:      projectCfg,
 		FnCache:         fnCache,
+		TypedPkgCache:   newTypedPkgCache(),
 	}
 
 	for _, f := range files {
@@ -315,6 +316,73 @@ func main() {
 		}
 	}
 
+	if reportFmt == "json" {
+		modelName := *model
+		if modelName == "" {
+			modelName = "gpt-4o-mini"
+		}
+
+		// Map per-file reports into the JSON schema.
+		jsonFiles := make([]report.JSONFile, 0, len(fileReports))
+		for _, fr := range fileReports {
+			jsonFiles = append(jsonFiles, report.JSONFile{
+				File:             fr.File,
+				Functions:        fr.Functions,
+				Status:           fr.Status,
+				TestsTotal:       fr.TestsTotal,
+				TestsPassed:      fr.TestsPassed,
+				TestsPruned:      fr.TestsPruned,
+				DiffCoverage:     fr.DiffCoverage,
+				BranchCoverage:   fr.BranchCoverage,
+				BranchesTotal:    fr.BranchesTotal,
+				BranchesCovered:  fr.BranchesCovered,
+				ErrorPathCov:     fr.ErrorPathCoverage,
+				ErrorPathsTotal:  fr.ErrorPathsTotal,
+				ErrorPathsCov:    fr.ErrorPathsCovered,
+				MutationScore:    fr.MutationScore,
+				MutationKilled:   fr.MutationKilled,
+				MutationTotal:    fr.MutationTotal,
+				PromptTokens:     fr.PromptTokens,
+				CompletionTokens: fr.CompletionTokens,
+				TokenEfficiency:  fr.TokenEfficiency,
+			})
+		}
+
+		run := report.JSONRun{
+			SchemaVersion: "1.0",
+			ProjectName:   filepath.Base(*repoPath),
+			Branch:        *baseBranch,
+			BaseBranch:    *baseBranch,
+			Model:         modelName,
+			Timestamp:     time.Now(),
+			DurationSec:   time.Since(startTime).Seconds(),
+			Files:         jsonFiles,
+			Totals:        report.BuildTotals(jsonFiles),
+			Config: &report.JSONConfig{
+				CoverageTarget:    *coverageTarget,
+				MaxRetries:        defaultMaxRetries,
+				MaxCoverageIter:   defaultMaxCoverIter,
+				RaceDetection:     *raceDetection || projectCfg.Race,
+				MutationEnabled:   *mutationTest,
+				CacheEnabled:      !*noCache,
+				SmartDiffEnabled:  !*noSmartDiff,
+				CoverageAnalysis:  !*noCoverage,
+				ValidationEnabled: !*noValidate,
+				TimeoutSeconds:    defaultTimeoutSec,
+				MaxContextTokens:  projectCfg.MaxContextTokens,
+				ExcludeFilesCount: len(projectCfg.Exclude),
+			},
+		}
+		run.Totals.TestsCached = totalCached
+
+		jsonPath, jsonErr := report.GenerateJSON(run, *repoPath)
+		if jsonErr != nil {
+			fmt.Printf("⚠️  JSON report generation failed: %v\n", jsonErr)
+		} else {
+			fmt.Printf("📊 JSON report: %s\n", jsonPath)
+		}
+	}
+
 	if totalAttempted > 0 && totalValidated == 0 {
 		os.Exit(2)
 	}
@@ -325,6 +393,16 @@ func main() {
 
 // runCoverageLoop runs iterative test re-generation based on diff coverage.
 // Returns the final diff coverage %.
+// coverageLoopResult carries both the diff-coverage outcome and the coverage
+// profile blocks that back it, so callers can compute additional metrics
+// (branch / error-path coverage) without re-running `go test -coverprofile`.
+type coverageLoopResult struct {
+	Coverage         float64                    // diff coverage %
+	Blocks           []coverage.CoverageBlock   // final profile blocks
+	PromptTokens     int                        // LLM tokens spent in this loop
+	CompletionTokens int
+}
+
 func runCoverageLoop(
 	client *llm.Client,
 	cfg llm.Config,
@@ -337,17 +415,20 @@ func runCoverageLoop(
 	target float64,
 	maxIter int,
 	timeoutSec int,
-) float64 {
+) coverageLoopResult {
 	// Determine module root and package directory
 	pkgDir := filepath.Dir(sourceFilePath)
 	moduleRoot := findModuleRoot(pkgDir)
 
+	out := coverageLoopResult{}
+
 	if moduleRoot == "" {
 		fmt.Printf("     ⚠️  Cannot find go.mod for coverage analysis\n")
-		return 0
+		return out
 	}
 
 	var lastCoverage float64
+	var lastBlocks []coverage.CoverageBlock
 
 	for iter := 1; iter <= maxIter; iter++ {
 		fmt.Printf("\n     📊 Coverage analysis (iteration %d/%d)...\n", iter, maxIter)
@@ -359,7 +440,9 @@ func runCoverageLoop(
 			if testOutput != "" {
 				fmt.Printf("     📋 Output: %s\n", truncate(testOutput, 200))
 			}
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
 
 		// Parse coverage profile
@@ -367,14 +450,19 @@ func runCoverageLoop(
 		os.Remove(coverFile)
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot read coverage profile: %v\n", err)
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
 
 		blocks, err := coverage.ParseProfile(string(profileData))
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot parse coverage profile: %v\n", err)
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
+		lastBlocks = blocks
 
 		// Calculate diff coverage (filter non-executable lines: imports, blanks, comments)
 		sourceFile := filepath.Base(sourceFilePath)
@@ -386,7 +474,9 @@ func runCoverageLoop(
 
 		if dcResult.Coverage >= target {
 			fmt.Printf("     ✅ Coverage target reached (%.1f%% >= %.1f%%)\n", dcResult.Coverage, target)
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
 
 		fmt.Printf("     📉 Below target (%.1f%% < %.1f%%), uncovered lines: %v\n",
@@ -394,14 +484,18 @@ func runCoverageLoop(
 
 		if len(dcResult.UncoveredLines) == 0 {
 			fmt.Printf("     ℹ️  No specific uncovered lines to target\n")
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
 
 		// Read current test file
 		currentTests, err := os.ReadFile(testFilePath)
 		if err != nil {
 			fmt.Printf("     ⚠️  Cannot read test file: %v\n", err)
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
 
 		// Build coverage gap prompt
@@ -420,8 +514,13 @@ func runCoverageLoop(
 		result, err := client.Generate(gapMessages)
 		if err != nil {
 			fmt.Printf("     ❌ LLM error during coverage iteration: %v\n", err)
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
+
+		out.PromptTokens += result.PromptTokens
+		out.CompletionTokens += result.CompletionTokens
 
 		fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
 			result.PromptTokens, result.CompletionTokens)
@@ -449,7 +548,9 @@ func runCoverageLoop(
 		// Save and validate
 		if err := os.WriteFile(testFilePath, []byte(newCode), 0644); err != nil {
 			fmt.Printf("     ❌ Cannot write file: %v\n", err)
-			return lastCoverage
+			out.Coverage = lastCoverage
+			out.Blocks = lastBlocks
+			return out
 		}
 
 		fmt.Printf("     🔬 Validating...\n")
@@ -475,25 +576,34 @@ func runCoverageLoop(
 	coverFile, _, err := coverage.RunCoverage(moduleRoot, pkgDir)
 	if err != nil {
 		fmt.Printf("     ⚠️  Final coverage run failed: %v\n", err)
-		return lastCoverage
+		out.Coverage = lastCoverage
+		out.Blocks = lastBlocks
+		return out
 	}
 	profileData, err := os.ReadFile(coverFile)
 	if err != nil {
-		return lastCoverage
+		out.Coverage = lastCoverage
+		out.Blocks = lastBlocks
+		return out
 	}
 	os.Remove(coverFile)
 
 	blocks, err := coverage.ParseProfile(string(profileData))
 	if err != nil {
-		return lastCoverage
+		out.Coverage = lastCoverage
+		out.Blocks = lastBlocks
+		return out
 	}
+	lastBlocks = blocks
 
 	sourceFile := filepath.Base(sourceFilePath)
 	dcResult := coverage.CalculateDiffCoverage(sourceFile, changedLines, blocks, sourceFilePath)
 	lastCoverage = dcResult.Coverage
 	fmt.Printf("     📈 Final diff coverage: %.1f%% (%d/%d lines)\n",
 		dcResult.Coverage, len(dcResult.CoveredLines), len(dcResult.ChangedLines))
-	return lastCoverage
+	out.Coverage = lastCoverage
+	out.Blocks = lastBlocks
+	return out
 }
 
 // findModuleRoot searches for go.mod up the directory tree.

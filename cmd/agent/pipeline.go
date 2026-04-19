@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	"github.com/gizatulin/testgen-agent/internal/analyzer"
+	"github.com/gizatulin/testgen-agent/internal/branchcov"
 	"github.com/gizatulin/testgen-agent/internal/cache"
 	"github.com/gizatulin/testgen-agent/internal/config"
+	"github.com/gizatulin/testgen-agent/internal/coverage"
 	"github.com/gizatulin/testgen-agent/internal/dedup"
 	"github.com/gizatulin/testgen-agent/internal/diff"
 	"github.com/gizatulin/testgen-agent/internal/gitdiff"
@@ -20,6 +22,7 @@ import (
 	"github.com/gizatulin/testgen-agent/internal/patterns"
 	"github.com/gizatulin/testgen-agent/internal/prompt"
 	"github.com/gizatulin/testgen-agent/internal/pruner"
+	"github.com/gizatulin/testgen-agent/internal/typed"
 	"github.com/gizatulin/testgen-agent/internal/validator"
 )
 
@@ -42,17 +45,53 @@ type pipelineOpts struct {
 	TimeoutSeconds    int
 	ProjectCfg        *config.Config
 	FnCache           *cache.Cache
+	// TypedPkgCache holds type-checked packages keyed by directory so that
+	// repeated lookups within the same run do not pay the `go/packages.Load`
+	// cost more than once per directory.
+	TypedPkgCache *typedPkgCache
+}
+
+// typedPkgCache memoises typed.Load results across processFile invocations.
+// A nil *typed.Package entry means a prior load failed and the caller should
+// fall back to syntactic analysis.
+type typedPkgCache struct {
+	entries map[string]*typed.Package
+}
+
+func newTypedPkgCache() *typedPkgCache {
+	return &typedPkgCache{entries: map[string]*typed.Package{}}
+}
+
+// get loads (or returns a cached) type-checked package for the given
+// directory. A nil result means type-checking was not available for that
+// directory; callers should gracefully fall back to syntactic heuristics.
+func (c *typedPkgCache) get(dir string) *typed.Package {
+	if c == nil {
+		return nil
+	}
+	if p, ok := c.entries[dir]; ok {
+		return p
+	}
+	res, err := typed.Load(dir)
+	if err != nil || res == nil || res.Package == nil {
+		c.entries[dir] = nil
+		return nil
+	}
+	c.entries[dir] = res.Package
+	return res.Package
 }
 
 type fileResult struct {
-	Report         ghub.FileReport
-	Generated      int
-	Validated      int
-	Cached         int
-	Attempted      bool
-	MutationScore  float64
-	MutationKilled int
-	MutationTotal  int
+	Report           ghub.FileReport
+	Generated        int
+	Validated        int
+	Cached           int
+	Attempted        bool
+	MutationScore    float64
+	MutationKilled   int
+	MutationTotal    int
+	PromptTokens     int
+	CompletionTokens int
 }
 
 // processFile runs the full test-generation pipeline for a single changed file.
@@ -88,6 +127,11 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	pkgDir := filepath.Dir(fullPath)
 	pkgAnalysis, pkgErr := analyzer.AnalyzePackage(pkgDir)
 
+	// Attempt to load a type-checked view of the same package. Used where
+	// precise, type-aware analysis is essential (interface satisfaction and
+	// call-graph resolution); syntactic fallbacks are used if it fails.
+	typedPkg := opts.TypedPkgCache.get(pkgDir)
+
 	if tag := analyzer.DetectBuildTag(readFileString(fullPath)); tag != "" {
 		fmt.Printf("     ⚠️  Build constraint: %s (may not compile on all platforms)\n", tag)
 	}
@@ -110,21 +154,18 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	var calledFuncs []analyzer.FuncInfo
 
 	if pkgErr == nil && pkgAnalysis != nil {
-		usedTypes, calledFuncs = collectDependencies(affectedFuncs, pkgAnalysis)
+		usedTypes, calledFuncs = collectDependencies(affectedFuncs, pkgAnalysis, typedPkg)
 	}
 
 	implMap := make(map[string][]string)
 	if pkgErr == nil && pkgAnalysis != nil {
 		for _, ti := range usedTypes {
-			if ti.Kind == "interface" && len(ti.Methods) > 0 {
-				impls := analyzer.FindImplementors(ti, pkgAnalysis.AllTypes, pkgAnalysis.AllFuncs)
-				if len(impls) > 0 {
-					names := make([]string, len(impls))
-					for i, imp := range impls {
-						names[i] = imp.Name
-					}
-					implMap[ti.Name] = names
-				}
+			if ti.Kind != "interface" || len(ti.Methods) == 0 {
+				continue
+			}
+			names := resolveImplementors(ti, pkgAnalysis, typedPkg)
+			if len(names) > 0 {
+				implMap[ti.Name] = names
 			}
 		}
 	}
@@ -239,10 +280,13 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	client := llm.NewClient(cfg)
 	testFilePath := buildTestFilePath(fullPath, opts.OutDir)
 
-	generatedCode, lastTestOutput, success := runGenerationLoop(
+	genResult := runGenerationLoop(
 		client, cfg, req, existingTests, testFilePath, opts, useRace, hasConcurrentFuncs,
 		affectedFuncs, usedTypes, f.NewPath,
 	)
+	res.PromptTokens += genResult.PromptTokens
+	res.CompletionTokens += genResult.CompletionTokens
+	success := genResult.Success
 
 	if success {
 		res.Generated++
@@ -250,26 +294,41 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 	}
 
 	if !success {
-		success = tryPrune(generatedCode, lastTestOutput, testFilePath, opts,
+		success = tryPrune(genResult.Code, genResult.TestOutput, testFilePath, opts,
 			affectedFuncs, usedTypes, f.NewPath, cfg.Model)
 		if success {
 			res.Generated++
 			res.Validated++
 		} else {
-			res.Report = buildFileReport(f.NewPath, affectedFuncs, 0, 0, 0, opts.CoverageTarget, false, 0, 0, 0)
+			res.Report = buildFileReport(reportInputs{
+				FilePath:         f.NewPath,
+				Funcs:            affectedFuncs,
+				Generated:        0,
+				Validated:        0,
+				DiffCov:          0,
+				CoverageTarget:   opts.CoverageTarget,
+				Success:          false,
+				PromptTokens:     res.PromptTokens,
+				CompletionTokens: res.CompletionTokens,
+			})
 			return res
 		}
 	}
 
 	// Diff coverage
-	var fileDiffCov float64
+	var covLoop coverageLoopResult
 	if !opts.NoValidate && !opts.NoCoverage && !opts.DryRun {
-		fileDiffCov = runCoverageLoop(
+		covLoop = runCoverageLoop(
 			client, cfg, req, testFilePath, fullPath, opts.RepoPath,
 			changedLines, affectedFuncs, opts.CoverageTarget,
 			opts.MaxCoverageIter, opts.TimeoutSeconds,
 		)
+		res.PromptTokens += covLoop.PromptTokens
+		res.CompletionTokens += covLoop.CompletionTokens
 	}
+
+	// Branch / error-path coverage (derived from the same coverage profile)
+	branchRes := calculateBranchMetrics(fullPath, affectedFuncs, covLoop.Blocks)
 
 	// Mutation testing
 	if opts.MutationTest && success && !opts.DryRun {
@@ -279,12 +338,34 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		res.MutationTotal = mutTotal
 	}
 
-	res.Report = buildFileReport(f.NewPath, affectedFuncs, res.Generated, res.Validated,
-		fileDiffCov, opts.CoverageTarget, success, res.MutationScore, res.MutationKilled, res.MutationTotal)
+	res.Report = buildFileReport(reportInputs{
+		FilePath:         f.NewPath,
+		Funcs:            affectedFuncs,
+		Generated:        res.Generated,
+		Validated:        res.Validated,
+		DiffCov:          covLoop.Coverage,
+		CoverageTarget:   opts.CoverageTarget,
+		Success:          success,
+		MutScore:         res.MutationScore,
+		MutKilled:        res.MutationKilled,
+		MutTotal:         res.MutationTotal,
+		BranchResult:     branchRes,
+		PromptTokens:     res.PromptTokens,
+		CompletionTokens: res.CompletionTokens,
+	})
 	return res
 }
 
-func collectDependencies(affectedFuncs []analyzer.FuncInfo, pkgAnalysis *analyzer.PackageAnalysis) ([]analyzer.TypeInfo, []analyzer.FuncInfo) {
+// collectDependencies collects types and functions referenced by affectedFuncs.
+//
+// The type list is always gathered via the syntactic analyzer (signatures are
+// already represented as strings in FuncInfo, so go/types adds no value
+// here). For the call graph we prefer type-checked resolution through typedPkg
+// when available: types.Info.Uses gives us the exact *types.Func referenced
+// by each identifier, avoiding the false positives that plagued the
+// name-based FindCalledFunctions helper (e.g. a local variable named the same
+// as a package function).
+func collectDependencies(affectedFuncs []analyzer.FuncInfo, pkgAnalysis *analyzer.PackageAnalysis, typedPkg *typed.Package) ([]analyzer.TypeInfo, []analyzer.FuncInfo) {
 	var usedTypes []analyzer.TypeInfo
 	var calledFuncs []analyzer.FuncInfo
 
@@ -300,11 +381,26 @@ func collectDependencies(affectedFuncs []analyzer.FuncInfo, pkgAnalysis *analyze
 
 	seenFuncs := make(map[string]bool)
 	for _, fn := range affectedFuncs {
-		for _, called := range analyzer.FindCalledFunctions(fn, pkgAnalysis) {
-			if !seenFuncs[called.Name] {
-				calledFuncs = append(calledFuncs, called)
-				seenFuncs[called.Name] = true
+		var calleeNames []string
+		if typedPkg != nil {
+			calleeNames = typedCalleeNames(typedPkg, fn)
+		}
+		if calleeNames == nil {
+			// Fallback: name-based call graph via AST.
+			for _, called := range analyzer.FindCalledFunctions(fn, pkgAnalysis) {
+				calleeNames = append(calleeNames, called.Name)
 			}
+		}
+		for _, name := range calleeNames {
+			if seenFuncs[name] {
+				continue
+			}
+			fi, ok := pkgAnalysis.FuncIndex[name]
+			if !ok {
+				continue
+			}
+			calledFuncs = append(calledFuncs, fi)
+			seenFuncs[name] = true
 		}
 	}
 
@@ -324,6 +420,50 @@ func collectDependencies(affectedFuncs []analyzer.FuncInfo, pkgAnalysis *analyze
 	}
 
 	return usedTypes, calledFuncs
+}
+
+// typedCalleeNames returns the same-package callees of fn as resolved by the
+// type checker. Returns nil when the function cannot be located in the
+// type-checked AST (callers should treat nil as "fall back to syntactic").
+func typedCalleeNames(pkg *typed.Package, fn analyzer.FuncInfo) []string {
+	var callees []typed.Callee
+	if fn.Receiver != "" {
+		recv := strings.TrimPrefix(fn.Receiver, "*")
+		callees = pkg.CalleesOfMethod(recv, fn.Name)
+	} else {
+		callees = pkg.Callees(fn.Name)
+	}
+	if callees == nil {
+		return nil
+	}
+	names := make([]string, 0, len(callees))
+	for _, c := range callees {
+		if !c.SamePackage {
+			continue
+		}
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// resolveImplementors returns the names of concrete types implementing the
+// given interface, preferring the type-checker's answer to the name-based
+// heuristic.
+func resolveImplementors(iface analyzer.TypeInfo, pkgAnalysis *analyzer.PackageAnalysis, typedPkg *typed.Package) []string {
+	if typedPkg != nil {
+		if names := typedPkg.Implementors(iface.Name); len(names) > 0 {
+			return names
+		}
+	}
+	impls := analyzer.FindImplementors(iface, pkgAnalysis.AllTypes, pkgAnalysis.AllFuncs)
+	if len(impls) == 0 {
+		return nil
+	}
+	names := make([]string, len(impls))
+	for i, imp := range impls {
+		names[i] = imp.Name
+	}
+	return names
 }
 
 func filterCached(fnCache *cache.Cache, filePath string, funcs []analyzer.FuncInfo, usedTypes []analyzer.TypeInfo) ([]analyzer.FuncInfo, int) {
@@ -388,9 +528,19 @@ func filterBySmartDiff(funcs []analyzer.FuncInfo, repoPath, baseBranch, filePath
 	return needGeneration
 }
 
+// generationLoopResult aggregates everything the generation loop produces so
+// the caller can later compute quality metrics (token efficiency) and build
+// the per-file report.
+type generationLoopResult struct {
+	Code             string // final test code written to disk
+	TestOutput       string // last go test output (JSON stream)
+	Success          bool
+	PromptTokens     int
+	CompletionTokens int
+}
+
 // runGenerationLoop attempts to generate and validate tests up to maxRetries times.
 // LLM generates ONLY new test functions; they are merged with existing tests before validation.
-// Returns (mergedCode, lastTestOutput, success).
 func runGenerationLoop(
 	client *llm.Client,
 	cfg llm.Config,
@@ -403,11 +553,12 @@ func runGenerationLoop(
 	affectedFuncs []analyzer.FuncInfo,
 	usedTypes []analyzer.TypeInfo,
 	relPath string,
-) (string, string, bool) {
+) generationLoopResult {
 	var mergedCode string
 	var rawNewCode string
 	var lastTestOutput string
 	var lastValError string
+	var out generationLoopResult
 
 	for attempt := 1; attempt <= opts.MaxRetries; attempt++ {
 		if attempt == 1 {
@@ -446,6 +597,8 @@ func runGenerationLoop(
 		}
 
 		rawNewCode = result.Content
+		out.PromptTokens += result.PromptTokens
+		out.CompletionTokens += result.CompletionTokens
 		fmt.Printf("     ✅ Generated (%d prompt + %d completion tokens)\n",
 			result.PromptTokens, result.CompletionTokens)
 
@@ -486,7 +639,10 @@ func runGenerationLoop(
 
 		if opts.NoValidate {
 			fmt.Printf("     💾 Tests saved: %s (validation disabled)\n\n", testFilePath)
-			return mergedCode, lastTestOutput, true
+			out.Code = mergedCode
+			out.TestOutput = lastTestOutput
+			out.Success = true
+			return out
 		}
 
 		fmt.Printf("     🔬 Validating...\n")
@@ -517,7 +673,10 @@ func runGenerationLoop(
 
 			fmt.Printf("     💾 Tests saved: %s\n\n", testFilePath)
 			updateCache(opts.FnCache, relPath, affectedFuncs, usedTypes, testFilePath, cfg.Model)
-			return mergedCode, lastTestOutput, true
+			out.Code = mergedCode
+			out.TestOutput = lastTestOutput
+			out.Success = true
+			return out
 		}
 
 		lastValError = valResult.Summary()
@@ -529,7 +688,10 @@ func runGenerationLoop(
 		}
 	}
 
-	return mergedCode, lastTestOutput, false
+	out.Code = mergedCode
+	out.TestOutput = lastTestOutput
+	out.Success = false
+	return out
 }
 
 // tryPrune attempts to salvage passing tests from a failed generation by pruning failing ones.
@@ -656,29 +818,81 @@ func injectMockIfMissing(code, mockCode string, usedTypes []analyzer.TypeInfo) s
 	return code
 }
 
-func buildFileReport(filePath string, funcs []analyzer.FuncInfo, generated, validated int, diffCov, coverageTarget float64, success bool, mutScore float64, mutKilled, mutTotal int) ghub.FileReport {
-	funcNames := make([]string, len(funcs))
-	for i, fn := range funcs {
+// reportInputs aggregates everything processFile collects about a file so the
+// report builder stays a small pure helper with a single argument.
+type reportInputs struct {
+	FilePath         string
+	Funcs            []analyzer.FuncInfo
+	Generated        int
+	Validated        int
+	DiffCov          float64
+	CoverageTarget   float64
+	Success          bool
+	MutScore         float64
+	MutKilled        int
+	MutTotal         int
+	BranchResult     branchcov.Result
+	PromptTokens     int
+	CompletionTokens int
+}
+
+func buildFileReport(in reportInputs) ghub.FileReport {
+	funcNames := make([]string, len(in.Funcs))
+	for i, fn := range in.Funcs {
 		funcNames[i] = fn.Name
 	}
 
 	status := "failed"
-	if success {
+	if in.Success {
 		status = "success"
-		if diffCov < coverageTarget && diffCov > 0 {
+		if in.DiffCov < in.CoverageTarget && in.DiffCov > 0 {
 			status = "partial"
 		}
 	}
 
-	return ghub.FileReport{
-		File:           filePath,
-		Functions:      funcNames,
-		TestsTotal:     generated,
-		TestsPassed:    validated,
-		DiffCoverage:   diffCov,
-		MutationScore:  mutScore,
-		MutationKilled: mutKilled,
-		MutationTotal:  mutTotal,
-		Status:         status,
+	tokenEff := 0.0
+	totalTokens := in.PromptTokens + in.CompletionTokens
+	if in.Validated > 0 && totalTokens > 0 {
+		tokenEff = float64(totalTokens) / float64(in.Validated)
 	}
+
+	return ghub.FileReport{
+		File:              in.FilePath,
+		Functions:         funcNames,
+		TestsTotal:        in.Generated,
+		TestsPassed:       in.Validated,
+		DiffCoverage:      in.DiffCov,
+		MutationScore:     in.MutScore,
+		MutationKilled:    in.MutKilled,
+		MutationTotal:     in.MutTotal,
+		BranchCoverage:    in.BranchResult.Coverage,
+		BranchesTotal:     in.BranchResult.Total,
+		BranchesCovered:   in.BranchResult.Covered,
+		ErrorPathCoverage: in.BranchResult.ErrorPathCoverage,
+		ErrorPathsTotal:   in.BranchResult.ErrorPathsTotal,
+		ErrorPathsCovered: in.BranchResult.ErrorPathsCovered,
+		PromptTokens:      in.PromptTokens,
+		CompletionTokens:  in.CompletionTokens,
+		TokenEfficiency:   tokenEff,
+		Status:            status,
+	}
+}
+
+// calculateBranchMetrics derives branch- and error-path coverage for the
+// affected functions from the last coverage profile we observed. Returns a
+// zero-valued Result if the inputs are insufficient (no blocks or no
+// affected functions) — the reporter will simply omit those metrics.
+func calculateBranchMetrics(sourcePath string, funcs []analyzer.FuncInfo, blocks []coverage.CoverageBlock) branchcov.Result {
+	if len(blocks) == 0 || len(funcs) == 0 {
+		return branchcov.Result{}
+	}
+	names := make(map[string]bool, len(funcs))
+	for _, fn := range funcs {
+		names[fn.Name] = true
+	}
+	branches, err := branchcov.Analyze(sourcePath, names)
+	if err != nil || len(branches) == 0 {
+		return branchcov.Result{}
+	}
+	return branchcov.Calculate(branches, blocks, filepath.Base(sourcePath))
 }
