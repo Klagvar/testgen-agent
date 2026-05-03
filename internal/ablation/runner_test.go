@@ -66,6 +66,80 @@ func TestRunner_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunner_ResetCallback verifies that runOnce invokes the Reset
+// callback before launching the agent and that a Reset failure aborts
+// the run with an explanatory error. This guarantees consecutive
+// ablation configurations cannot leak state between each other.
+func TestRunner_ResetCallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake agent script is a POSIX shell; skipping on Windows")
+	}
+	repo := t.TempDir()
+	out := t.TempDir()
+	agent := filepath.Join(t.TempDir(), "agent.sh")
+	if err := os.WriteFile(agent, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write agent: %v", err)
+	}
+
+	called := 0
+	r := Runner{Opts: RunOptions{
+		AgentBin:   agent,
+		RepoPath:   repo,
+		BaseBranch: "main",
+		Report:     "json",
+		OutDir:     out,
+		Reset:      func() error { called++; return nil },
+	}}
+	r.Run(Config{Name: "no-types", Flags: []string{"--no-types"}})
+	if called != 1 {
+		t.Fatalf("Reset must be invoked once per run, got %d", called)
+	}
+
+	// RunRepeated with N=3 must invoke Reset exactly N times.
+	called = 0
+	r.Opts.Runs = 3
+	r.Opts.SeedBase = 42
+	recs := r.RunRepeated(Config{Name: "full"})
+	if called != 3 {
+		t.Fatalf("Reset must be invoked once per repeat, got %d (recs=%d)", called, len(recs))
+	}
+}
+
+func TestRunner_ResetFailureAborts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake agent script is a POSIX shell; skipping on Windows")
+	}
+	repo := t.TempDir()
+	out := t.TempDir()
+	agent := filepath.Join(t.TempDir(), "agent.sh")
+	// Marker that fails the test if the agent runs despite Reset error.
+	if err := os.WriteFile(agent, []byte("#!/bin/sh\ntouch \"$1/agent-ran\"\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write agent: %v", err)
+	}
+
+	r := Runner{Opts: RunOptions{
+		AgentBin:   agent,
+		RepoPath:   repo,
+		BaseBranch: "main",
+		Report:     "json",
+		OutDir:     out,
+		Reset:      func() error { return errSentinel },
+	}}
+	rec := r.Run(Config{Name: "full"})
+	if rec.Err == "" {
+		t.Fatal("expected error when Reset fails")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "agent-ran")); err == nil {
+		t.Fatal("agent must not run when Reset fails")
+	}
+}
+
+var errSentinel = &resetErr{msg: "boom"}
+
+type resetErr struct{ msg string }
+
+func (e *resetErr) Error() string { return e.msg }
+
 func TestFindLatestJSONReport_Empty(t *testing.T) {
 	dir := t.TempDir()
 	if p := findLatestJSONReport(dir); p != "" {

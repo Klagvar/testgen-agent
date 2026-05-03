@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,89 @@ func TestCloner_Ensure(t *testing.T) {
 	if dir != dir2 {
 		t.Fatalf("dir changed between calls: %q vs %q", dir, dir2)
 	}
+}
+
+// TestCloner_Reset verifies that Reset returns the working tree to the
+// commit identified by headSHA: tracked files modified since the run
+// must be reverted, and untracked files (mimicking .testgen-cache.json
+// or *_generated_test.go) must be removed. Without this guarantee the
+// benchmark harness cannot run consecutive ablation configurations on
+// the same clone.
+func TestCloner_Reset(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	mustGit(t, "", "init", repo)
+	mustGit(t, repo, "config", "user.email", "bench@test")
+	mustGit(t, repo, "config", "user.name", "bench")
+	mustGit(t, repo, "checkout", "-B", "main")
+	writeFile(t, filepath.Join(repo, "main.go"), "package main\nfunc main(){}")
+	mustGit(t, repo, "add", ".")
+	mustGit(t, repo, "commit", "-m", "init")
+
+	headSHA := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+
+	writeFile(t, filepath.Join(repo, "main.go"), "package main\nfunc main(){println(\"dirty\")}")
+	writeFile(t, filepath.Join(repo, "main_generated_test.go"), "package main")
+	writeFile(t, filepath.Join(repo, ".testgen-cache.json"), `{"version":"1","entries":{}}`)
+	if err := os.MkdirAll(filepath.Join(repo, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repo, "subdir", "junk.txt"), "noise")
+
+	cl := &Cloner{GitBin: "git"}
+	if err := cl.Reset(repo, headSHA); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(repo, "main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	// Normalise CRLF: on Windows git's autocrlf may rewrite line endings
+	// during `reset --hard`. We care about content, not byte-for-byte
+	// identity with the source string we wrote earlier.
+	gotNorm := strings.ReplaceAll(string(got), "\r\n", "\n")
+	if gotNorm != "package main\nfunc main(){}" {
+		t.Fatalf("main.go not reverted, got: %q", gotNorm)
+	}
+	for _, p := range []string{
+		"main_generated_test.go",
+		".testgen-cache.json",
+		"subdir/junk.txt",
+		"subdir",
+	} {
+		if _, err := os.Stat(filepath.Join(repo, p)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, err=%v", p, err)
+		}
+	}
+}
+
+// TestCloner_Reset_RejectsEmptyArgs guards the contract that callers
+// never accidentally pass an empty headSHA (which on older git versions
+// would silently reset to whatever HEAD currently points at).
+func TestCloner_Reset_RejectsEmptyArgs(t *testing.T) {
+	cl := &Cloner{GitBin: "git"}
+	if err := cl.Reset("", "deadbeef"); err == nil {
+		t.Fatal("expected error for empty dir")
+	}
+	if err := cl.Reset(t.TempDir(), ""); err == nil {
+		t.Fatal("expected error for empty headSHA")
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
 }
 
 func mustGit(t *testing.T, dir string, args ...string) {

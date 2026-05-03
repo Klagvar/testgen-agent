@@ -21,7 +21,8 @@ type FileReport struct {
 	TestsTotal        int      // total generated tests
 	TestsPassed       int      // passed validation
 	TestsPruned       int      // pruned (failing)
-	DiffCoverage      float64  // diff coverage %
+	DiffCoverage      float64  // diff coverage % (only meaningful when CoverageComputed)
+	CoverageComputed  bool     // true if diff coverage analysis ran on this file
 	BranchCoverage    float64  // branch coverage % within changed functions (−1 if not computed)
 	BranchesTotal     int      // total branches discovered
 	BranchesCovered   int      // branches whose body executed

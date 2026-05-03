@@ -52,11 +52,14 @@ var DefaultConfigs = []Config{
 		Description: "Iterative coverage-gap loop disabled",
 		Flags:       []string{"--no-coverage"},
 	},
-	{
-		Name:        "no-cache",
-		Description: "Function-level cache disabled (regenerate everything)",
-		Flags:       []string{"--no-cache"},
-	},
+	// no-cache is intentionally absent: the function-level cache is an
+	// engineering optimisation that only activates on a *re-run* of the
+	// agent against a previously processed repository. The benchmark
+	// harness resets the working tree between every run (see
+	// benchmark.runOne), so .testgen-cache.json never carries over and
+	// "no-cache" would be tautologically equivalent to "full". Cache
+	// efficiency is measured in a separate micro-experiment described in
+	// the experiment plan, not through ablation.
 }
 
 // FindConfig returns the configuration with the given name, or (Config{}, false)

@@ -33,6 +33,8 @@ func main() {
 	model := flag.String("model", "", "LLM model (forwarded to agent as --model)")
 	configsCSV := flag.String("configs", "", "Comma-separated list of ablation configs (empty = all defaults)")
 	extraArgs := flag.String("extra", "", "Extra args forwarded to the agent (space-separated)")
+	runs := flag.Int("runs", 1, "Number of repeated runs per (repo × config)")
+	seedBase := flag.Int("seed-base", 0, "Base LLM seed forwarded to the agent (0 = unset)")
 	skipClone := flag.Bool("skip-clone", false, "Treat dataset.repos[].url as a local path already checked out")
 	listOnly := flag.Bool("list", false, "Print dataset contents and exit")
 	flag.Parse()
@@ -73,6 +75,8 @@ func main() {
 		Model:     *model,
 		OutDir:    *outDir,
 		ExtraArgs: splitWS(*extraArgs),
+		Runs:      *runs,
+		SeedBase:  *seedBase,
 		SkipClone: *skipClone,
 		Stdout:    os.Stdout,
 		Stderr:    os.Stderr,

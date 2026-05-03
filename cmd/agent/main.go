@@ -42,6 +42,9 @@ func main() {
 	apiKey := flag.String("api-key", "", "LLM API key (or TESTGEN_API_KEY env)")
 	baseURL := flag.String("api-url", "", "LLM API URL (default: OpenAI)")
 	model := flag.String("model", "", "LLM model (default: gpt-4o-mini)")
+	temperature := flag.Float64("temperature", -1, "LLM sampling temperature (negative = use backend default)")
+	seed := flag.Int("seed", 0, "LLM sampling seed for reproducibility (0 = unset)")
+	runIndex := flag.Int("run-index", 0, "1-based index of this run within a multi-run experiment (0 = single run)")
 	outDir := flag.String("out", "", "Output directory for tests (default: next to source)")
 	dryRun := flag.Bool("dry-run", false, "Preview prompt without calling LLM")
 	noValidate := flag.Bool("no-validate", false, "Skip test validation")
@@ -159,6 +162,8 @@ func main() {
 		APIKey:                   *apiKey,
 		BaseURL:                  *baseURL,
 		Model:                    *model,
+		Temperature:              *temperature,
+		Seed:                     *seed,
 		DryRun:                   *dryRun,
 		NoValidate:               *noValidate,
 		NoCoverage:               *noCoverage,
@@ -351,7 +356,7 @@ func main() {
 				TestsTotal:       fr.TestsTotal,
 				TestsPassed:      fr.TestsPassed,
 				TestsPruned:      fr.TestsPruned,
-				DiffCoverage:     fr.DiffCoverage,
+				DiffCoverage:     diffCovPtr(fr.DiffCoverage, fr.CoverageComputed),
 				BranchCoverage:   fr.BranchCoverage,
 				BranchesTotal:    fr.BranchesTotal,
 				BranchesCovered:  fr.BranchesCovered,
@@ -403,12 +408,15 @@ func main() {
 				TimeoutSeconds:            defaultTimeoutSec,
 				MaxContextTokens:          projectCfg.MaxContextTokens,
 				ExcludeFilesCount:         len(projectCfg.Exclude),
-				AblationConfig:            *ablationLabel,
-				TypesEnabled:              !*noTypes,
-				StructuredFeedbackEnabled: !*noStructuredFeedback,
-				PruningEnabled:            !*noPruning,
-				NaturalnessEnabled:        !*noNaturalness,
-			},
+			AblationConfig:            *ablationLabel,
+			TypesEnabled:              !*noTypes,
+			StructuredFeedbackEnabled: !*noStructuredFeedback,
+			PruningEnabled:            !*noPruning,
+			NaturalnessEnabled:        !*noNaturalness,
+			Temperature:               optionalTemperature(*temperature),
+			Seed:                      optionalSeed(*seed),
+			RunIndex:                  *runIndex,
+		},
 		}
 		run.Totals.TestsCached = totalCached
 
@@ -756,7 +764,7 @@ func resolvePRNumber(flagVal int) int {
 }
 
 // buildLLMConfig builds the LLM client configuration from CLI flags and env.
-func buildLLMConfig(apiKey, baseURL, model string) llm.Config {
+func buildLLMConfig(apiKey, baseURL, model string, temperature float64, seed int) llm.Config {
 	cfg := llm.DefaultConfig()
 
 	if apiKey != "" {
@@ -775,6 +783,26 @@ func buildLLMConfig(apiKey, baseURL, model string) llm.Config {
 		cfg.Model = model
 	} else if envModel := os.Getenv("TESTGEN_MODEL"); envModel != "" {
 		cfg.Model = envModel
+	}
+
+	if temperature >= 0 {
+		t := temperature
+		cfg.Temperature = &t
+	} else if envTemp := os.Getenv("TESTGEN_TEMPERATURE"); envTemp != "" {
+		var t float64
+		if _, err := fmt.Sscanf(envTemp, "%f", &t); err == nil && t >= 0 {
+			cfg.Temperature = &t
+		}
+	}
+
+	if seed != 0 {
+		s := seed
+		cfg.Seed = &s
+	} else if envSeed := os.Getenv("TESTGEN_SEED"); envSeed != "" {
+		var s int
+		if _, err := fmt.Sscanf(envSeed, "%d", &s); err == nil && s != 0 {
+			cfg.Seed = &s
+		}
 	}
 
 	return cfg
@@ -826,4 +854,33 @@ func applyConfigDefaults(
 	if *coverageTarget == defaultCoverThreshold && cfg.CoverageThreshold > 0 {
 		*coverageTarget = cfg.CoverageThreshold
 	}
+}
+
+// optionalTemperature returns &t when the user supplied a non-negative
+// value, otherwise nil (preserves "use backend default" semantics).
+func optionalTemperature(t float64) *float64 {
+	if t < 0 {
+		return nil
+	}
+	return &t
+}
+
+// optionalSeed returns &s when the user supplied a non-zero seed,
+// otherwise nil (preserves "seed unset" semantics).
+func optionalSeed(s int) *int {
+	if s == 0 {
+		return nil
+	}
+	return &s
+}
+
+// diffCovPtr returns a pointer to v when the diff-coverage analysis
+// actually ran for this file (computed=true), nil otherwise. This lets
+// downstream aggregators distinguish "metric not computed" from a valid
+// zero observation.
+func diffCovPtr(v float64, computed bool) *float64 {
+	if !computed {
+		return nil
+	}
+	return &v
 }

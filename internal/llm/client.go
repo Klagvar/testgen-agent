@@ -18,12 +18,14 @@ import (
 
 // Config holds LLM client settings.
 type Config struct {
-	APIKey     string // API key (empty for local models)
-	BaseURL    string // base API URL (e.g., https://api.openai.com/v1)
-	Model      string // model name (e.g., gpt-4o, deepseek-coder, etc.)
-	Timeout    int    // timeout in seconds (default 120)
-	MaxTokens  int    // max response tokens (0 = unlimited)
-	MaxRetries int    // max HTTP retries on transient errors (default 3)
+	APIKey     string   // API key (empty for local models)
+	BaseURL    string   // base API URL (e.g., https://api.openai.com/v1)
+	Model      string   // model name (e.g., gpt-4o, deepseek-coder, etc.)
+	Timeout    int      // timeout in seconds (default 120)
+	MaxTokens  int      // max response tokens (0 = unlimited)
+	MaxRetries int      // max HTTP retries on transient errors (default 3)
+	Temperature *float64 // sampling temperature (nil = backend default)
+	Seed        *int     // sampling seed for reproducibility (nil = not set)
 }
 
 // DefaultConfig returns the default configuration (OpenAI).
@@ -62,9 +64,11 @@ func NewClient(cfg Config) *Client {
 
 // chatRequest is the LLM API request body.
 type chatRequest struct {
-	Model     string           `json:"model"`
-	Messages  []prompt.Message `json:"messages"`
-	MaxTokens int              `json:"max_tokens,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []prompt.Message `json:"messages"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	Seed        *int             `json:"seed,omitempty"`
 }
 
 // chatResponse is the LLM API response.
@@ -108,8 +112,10 @@ func isRetryableStatus(code int) bool {
 // Retries transient HTTP errors with exponential backoff + jitter.
 func (c *Client) Generate(messages []prompt.Message) (*GenerateResponse, error) {
 	reqBody := chatRequest{
-		Model:    c.config.Model,
-		Messages: messages,
+		Model:       c.config.Model,
+		Messages:    messages,
+		Temperature: c.config.Temperature,
+		Seed:        c.config.Seed,
 	}
 	if c.config.MaxTokens > 0 {
 		reqBody.MaxTokens = c.config.MaxTokens

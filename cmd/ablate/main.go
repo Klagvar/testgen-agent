@@ -34,6 +34,8 @@ func main() {
 	model := flag.String("model", "", "LLM model override (passed to agent)")
 	outDir := flag.String("out", "./ablation-results", "Directory for per-configuration JSON reports")
 	configsCSV := flag.String("configs", "", "Comma-separated list of ablation configs (empty = all defaults)")
+	runs := flag.Int("runs", 1, "Number of repeated runs per configuration (>=1)")
+	seedBase := flag.Int("seed-base", 0, "Base LLM seed forwarded to the agent (0 = unset). Run i uses seed-base + i - 1.")
 	listConfigs := flag.Bool("list", false, "List known ablation configurations and exit")
 	flag.Parse()
 
@@ -75,6 +77,8 @@ func main() {
 			Model:      *model,
 			Report:     "json",
 			OutDir:     absOut,
+			Runs:       *runs,
+			SeedBase:   *seedBase,
 			Stdout:     os.Stdout,
 			Stderr:     os.Stderr,
 		},
@@ -84,10 +88,17 @@ func main() {
 	started := time.Now()
 	for _, cfg := range configs {
 		fmt.Printf("▶️  Running configuration: %s (%s)\n", cfg.Name, cfg.Description)
-		rec := runner.Run(cfg)
-		records = append(records, rec)
-		fmt.Printf("   ✔ exit=%d  duration=%s  report=%s  err=%s\n\n",
-			rec.ExitCode, rec.Duration.Round(time.Second), rec.ReportPath, rec.Err)
+		recs := runner.RunRepeated(cfg)
+		for _, rec := range recs {
+			records = append(records, rec)
+			label := ""
+			if rec.RunIndex > 0 {
+				label = fmt.Sprintf(" run %d/%d", rec.RunIndex, *runs)
+			}
+			fmt.Printf("   ✔%s exit=%d  duration=%s  report=%s  err=%s\n",
+				label, rec.ExitCode, rec.Duration.Round(time.Second), rec.ReportPath, rec.Err)
+		}
+		fmt.Println()
 	}
 
 	idxPath := filepath.Join(absOut, "index.json")

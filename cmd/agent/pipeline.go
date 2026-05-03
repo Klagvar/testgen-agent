@@ -34,6 +34,8 @@ type pipelineOpts struct {
 	APIKey            string
 	BaseURL           string
 	Model             string
+	Temperature       float64 // negative = use backend default
+	Seed              int     // 0 = unset
 	DryRun            bool
 	NoValidate        bool
 	NoCoverage        bool
@@ -284,7 +286,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		return res
 	}
 
-	cfg := buildLLMConfig(opts.APIKey, opts.BaseURL, opts.Model)
+	cfg := buildLLMConfig(opts.APIKey, opts.BaseURL, opts.Model, opts.Temperature, opts.Seed)
 	if cfg.APIKey == "" && cfg.BaseURL == "https://api.openai.com/v1" {
 		fmt.Printf("     ⚠️  No API key. Use --api-key or TESTGEN_API_KEY env\n")
 		fmt.Printf("     💡 Or set --api-url for local model (Ollama)\n\n")
@@ -371,6 +373,7 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		Generated:        res.Generated,
 		Validated:        res.Validated,
 		DiffCov:          covLoop.Coverage,
+		CoverageComputed: !opts.NoValidate && !opts.NoCoverage && !opts.DryRun && success,
 		CoverageTarget:   opts.CoverageTarget,
 		Success:          success,
 		MutScore:         res.MutationScore,
@@ -854,6 +857,7 @@ type reportInputs struct {
 	Generated        int
 	Validated        int
 	DiffCov          float64
+	CoverageComputed bool
 	CoverageTarget   float64
 	Success          bool
 	MutScore         float64
@@ -891,6 +895,7 @@ func buildFileReport(in reportInputs) ghub.FileReport {
 		TestsTotal:        in.Generated,
 		TestsPassed:       in.Validated,
 		DiffCoverage:      in.DiffCov,
+		CoverageComputed:  in.CoverageComputed,
 		MutationScore:     in.MutScore,
 		MutationKilled:    in.MutKilled,
 		MutationTotal:     in.MutTotal,

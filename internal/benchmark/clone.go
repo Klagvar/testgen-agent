@@ -69,6 +69,32 @@ func (c *Cloner) Ensure(repo Repo, workDir string) (string, error) {
 	return absDst, nil
 }
 
+// Reset returns the working tree at dir to a pristine state at headSHA.
+// All tracked files are reverted (`git reset --hard <head>`) and every
+// untracked artefact, including `.testgen-cache.json` and generated
+// `*_generated_test.go`, is removed (`git clean -fdx`).
+//
+// The benchmark harness calls Reset between every ablation run so that
+// independent runs do not leak state through cached entries, partially
+// merged tests, or stale coverage profiles. Without it, a `no-types`
+// run that follows `full` would observe full's cache hits and produce
+// metrics indistinguishable from the baseline.
+func (c *Cloner) Reset(dir, headSHA string) error {
+	if dir == "" {
+		return fmt.Errorf("Cloner.Reset: dir is required")
+	}
+	if headSHA == "" {
+		return fmt.Errorf("Cloner.Reset: headSHA is required")
+	}
+	if err := c.run(dir, "reset", "--hard", headSHA); err != nil {
+		return fmt.Errorf("git reset --hard %s in %s: %w", headSHA, dir, err)
+	}
+	if err := c.run(dir, "clean", "-fdx"); err != nil {
+		return fmt.Errorf("git clean -fdx in %s: %w", dir, err)
+	}
+	return nil
+}
+
 // run executes `git <args…>` with cwd set to dir (or inherited when empty).
 func (c *Cloner) run(dir string, args ...string) error {
 	bin := c.GitBin

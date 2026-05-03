@@ -64,13 +64,16 @@ type JSONTotals struct {
 
 // JSONFile mirrors github.FileReport but trims presentation-only fields.
 type JSONFile struct {
-	File             string   `json:"file"`
-	Functions        []string `json:"functions"`
-	Status           string   `json:"status"`
-	TestsTotal       int      `json:"tests_total"`
-	TestsPassed      int      `json:"tests_passed"`
-	TestsPruned      int      `json:"tests_pruned,omitempty"`
-	DiffCoverage     float64  `json:"diff_coverage_pct"`
+	File         string   `json:"file"`
+	Functions    []string `json:"functions"`
+	Status       string   `json:"status"`
+	TestsTotal   int      `json:"tests_total"`
+	TestsPassed  int      `json:"tests_passed"`
+	TestsPruned  int      `json:"tests_pruned,omitempty"`
+	// DiffCoverage is a pointer so that callers can distinguish "metric
+	// was not computed (nil)" from "computed and equal to zero (0.0)".
+	// BuildTotals consumes this distinction when averaging across files.
+	DiffCoverage     *float64 `json:"diff_coverage_pct,omitempty"`
 	BranchCoverage   float64  `json:"branch_coverage_pct,omitempty"`
 	BranchesTotal    int      `json:"branches_total,omitempty"`
 	BranchesCovered  int      `json:"branches_covered,omitempty"`
@@ -125,6 +128,17 @@ type JSONConfig struct {
 	StructuredFeedbackEnabled bool   `json:"structured_feedback_enabled"`
 	PruningEnabled            bool   `json:"pruning_enabled"`
 	NaturalnessEnabled        bool   `json:"naturalness_enabled"`
+
+	// LLM sampling knobs that affect reproducibility. Both fields are
+	// optional: a missing value records "use the backend default" rather
+	// than a specific number, which is useful when comparing runs that
+	// were intentionally run with different sampling configurations.
+	Temperature *float64 `json:"temperature,omitempty"`
+	Seed        *int     `json:"seed,omitempty"`
+
+	// RunIndex distinguishes repeated runs of the same configuration
+	// (1-based). Single-run experiments leave this at 0/omitted.
+	RunIndex int `json:"run_index,omitempty"`
 }
 
 // GenerateJSON writes the JSON experimental record next to other reports and
@@ -161,8 +175,12 @@ func BuildTotals(files []JSONFile) JSONTotals {
 	for _, f := range files {
 		t.TestsGenerated += f.TestsTotal
 		t.TestsValidated += f.TestsPassed
-		if f.DiffCoverage > 0 {
-			covSum += f.DiffCoverage
+		// Average over every file that produced a diff-coverage measurement,
+		// including 0.0 (file changed but no changed line was hit by tests).
+		// Files where coverage was not computed (nil) are excluded so their
+		// absence does not bias the mean toward zero.
+		if f.DiffCoverage != nil {
+			covSum += *f.DiffCoverage
 			covN++
 		}
 		t.MutationsKilled += f.MutationKilled

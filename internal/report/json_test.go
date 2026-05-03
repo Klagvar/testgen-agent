@@ -24,12 +24,13 @@ func TestBuildTotals_EmptyFiles(t *testing.T) {
 }
 
 func TestBuildTotals_AggregatesAllMetrics(t *testing.T) {
+	cov80, cov60 := 80.0, 60.0
 	files := []JSONFile{
 		{
 			File:             "a.go",
 			TestsTotal:       5,
 			TestsPassed:      4,
-			DiffCoverage:     80,
+			DiffCoverage:     &cov80,
 			MutationKilled:   3,
 			MutationTotal:    5,
 			BranchesCovered:  6,
@@ -43,7 +44,7 @@ func TestBuildTotals_AggregatesAllMetrics(t *testing.T) {
 			File:             "b.go",
 			TestsTotal:       3,
 			TestsPassed:      2,
-			DiffCoverage:     60,
+			DiffCoverage:     &cov60,
 			MutationKilled:   2,
 			MutationTotal:    4,
 			BranchesCovered:  2,
@@ -82,13 +83,35 @@ func TestBuildTotals_AggregatesAllMetrics(t *testing.T) {
 }
 
 func TestBuildTotals_NoTokensNoEfficiency(t *testing.T) {
-	files := []JSONFile{{File: "a.go", TestsPassed: 2, DiffCoverage: 50}}
+	cov50 := 50.0
+	files := []JSONFile{{File: "a.go", TestsPassed: 2, DiffCoverage: &cov50}}
 	got := BuildTotals(files)
 	if got.TokenEfficiency != nil {
 		t.Errorf("TokenEfficiency must be nil when no tokens observed")
 	}
 	if got.MutationScorePct != nil {
 		t.Errorf("MutationScorePct must be nil when no mutations observed")
+	}
+}
+
+// TestBuildTotals_ZeroDiffCovIsValid verifies that an explicit zero
+// diff-coverage observation is averaged in (not silently dropped). A
+// previous version of BuildTotals filtered values with `> 0`, which
+// silently biased the mean upward when generated tests covered no
+// changed lines.
+func TestBuildTotals_ZeroDiffCovIsValid(t *testing.T) {
+	cov0, cov100 := 0.0, 100.0
+	files := []JSONFile{
+		{File: "a.go", DiffCoverage: &cov0},   // computed: tests covered nothing
+		{File: "b.go", DiffCoverage: &cov100}, // computed: full coverage
+		{File: "c.go", DiffCoverage: nil},     // not computed (e.g. dry-run)
+	}
+	got := BuildTotals(files)
+	if got.DiffCoveragePct == nil {
+		t.Fatalf("DiffCoveragePct must not be nil when at least one file reported a value")
+	}
+	if math.Abs(*got.DiffCoveragePct-50) > 0.001 {
+		t.Errorf("DiffCoveragePct = %v, want 50 (average of 0 and 100, c.go excluded)", *got.DiffCoveragePct)
 	}
 }
 

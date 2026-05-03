@@ -15,13 +15,18 @@ import (
 // sensible default so callers can instantiate the runner with a single
 // line.
 type Options struct {
-	AgentBin  string             // required: path to testgen-agent binary
-	Configs   []ablation.Config  // which ablation configs to run per repo
-	Model     string             // forwarded as --model when non-empty
-	OutDir    string             // root directory for <repo>/<config>.json
-	ExtraArgs []string           // forwarded verbatim to the agent
-	Stdout    io.Writer          // where to stream subprocess stdout
-	Stderr    io.Writer          // where to stream subprocess stderr
+	AgentBin  string            // required: path to testgen-agent binary
+	Configs   []ablation.Config // which ablation configs to run per repo
+	Model     string            // forwarded as --model when non-empty
+	OutDir    string            // root directory for <repo>/<config>.json
+	ExtraArgs []string          // forwarded verbatim to the agent
+	Stdout    io.Writer         // where to stream subprocess stdout
+	Stderr    io.Writer         // where to stream subprocess stderr
+	// Runs is the number of repeated runs per (repo × config). Values
+	// below 1 fall back to a single run. SeedBase is forwarded to the
+	// agent as --seed (incremented per repeated run).
+	Runs     int
+	SeedBase int
 	// SkipClone bypasses the Cloner and treats repo.URL as a local path
 	// that is already checked out at repo.Head. Useful for tests and for
 	// iterating on local copies without network access.
@@ -108,6 +113,18 @@ func (r *Runner) runOne(repo Repo, workDir string, configs []ablation.Config) Re
 		return res
 	}
 
+	// Reset returns the working tree at cloneDir to repo.Head and removes
+	// every untracked artefact between runs. Without this the second
+	// ablation configuration would inherit .testgen-cache.json and
+	// generated tests from the first, biasing every metric. SkipClone
+	// is honoured: when callers point us at a local directory rather
+	// than a clone, we trust them to manage state themselves.
+	var resetFn func() error
+	if !r.Opts.SkipClone {
+		cloner := r.Cloner
+		resetFn = func() error { return cloner.Reset(cloneDir, repo.Head) }
+	}
+
 	runner := ablation.Runner{Opts: ablation.RunOptions{
 		AgentBin:   r.Opts.AgentBin,
 		RepoPath:   res.AgentDir,
@@ -116,14 +133,17 @@ func (r *Runner) runOne(repo Repo, workDir string, configs []ablation.Config) Re
 		Report:     "json",
 		OutDir:     outDir,
 		ExtraArgs:  r.Opts.ExtraArgs,
+		Runs:       r.Opts.Runs,
+		SeedBase:   r.Opts.SeedBase,
+		Reset:      resetFn,
 		Stdout:     fileFromWriter(r.Opts.Stdout),
 		Stderr:     fileFromWriter(r.Opts.Stderr),
 	}}
 
 	for _, cfg := range configs {
 		r.logf("▶️  %s / %s\n", repo.Name, cfg.Name)
-		rec := runner.Run(cfg)
-		res.Runs = append(res.Runs, rec)
+		recs := runner.RunRepeated(cfg)
+		res.Runs = append(res.Runs, recs...)
 	}
 	res.Duration = time.Since(start)
 	return res
