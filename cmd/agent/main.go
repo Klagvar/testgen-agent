@@ -58,6 +58,7 @@ func main() {
 	noSmartDiff := flag.Bool("no-smart-diff", false, "Disable git-based function comparison")
 	raceDetection := flag.Bool("race", false, "Enable race detection for concurrent tests")
 	reportFormat := flag.String("report", "", "Generate report: html, json (empty = no report)")
+	testTimeout := flag.Int("test-timeout", 0, "Override per-package go test timeout (seconds; 0 = use config or default 300)")
 
 	// Ablation knobs — disable individual pipeline components so that
 	// experiments can isolate each component's contribution to the final
@@ -148,6 +149,13 @@ func main() {
 	cfgTimeout := projectCfg.Timeout
 	if cfgTimeout < 10 {
 		cfgTimeout = defaultTimeoutSec
+	}
+	// CLI flag wins over .testgen.yml. Useful in experiments where the
+	// LLM occasionally produces tests that loop forever; without a tighter
+	// per-package cap one such test inside one ablation config can stall
+	// the whole cube for tens of minutes per attempt.
+	if *testTimeout > 0 {
+		cfgTimeout = *testTimeout
 	}
 
 	// Honour --no-mutation irrespective of YAML config (ablation precedence).
