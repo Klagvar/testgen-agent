@@ -26,6 +26,16 @@ type Config struct {
 	MaxRetries int      // max HTTP retries on transient errors (default 3)
 	Temperature *float64 // sampling temperature (nil = backend default)
 	Seed        *int     // sampling seed for reproducibility (nil = not set)
+	// Provider is the OpenRouter "provider.only" allowlist used to pin a
+	// request to a specific upstream backend (e.g. ["Phala"]). When empty,
+	// the gateway picks providers automatically. When non-empty, the field
+	// also controls whether OpenRouter is allowed to fall back outside the
+	// allowlist (see AllowFallbacks). Ignored by non-OpenRouter backends.
+	Provider []string
+	// AllowFallbacks toggles OpenRouter "provider.allow_fallbacks". Only
+	// meaningful when Provider is non-empty. Defaults to false (strict pin)
+	// to keep experimental runs reproducible across requests.
+	AllowFallbacks bool
 }
 
 // DefaultConfig returns the default configuration (OpenAI).
@@ -69,11 +79,26 @@ type chatRequest struct {
 	MaxTokens   int              `json:"max_tokens,omitempty"`
 	Temperature *float64         `json:"temperature,omitempty"`
 	Seed        *int             `json:"seed,omitempty"`
+	// Provider is the OpenRouter routing override. Serialized only when the
+	// caller actually populated Config.Provider; otherwise omitted so that
+	// other OpenAI-compatible backends (which would reject the field) keep
+	// working unchanged.
+	Provider *providerSpec `json:"provider,omitempty"`
+}
+
+// providerSpec mirrors OpenRouter's "provider" routing object.
+// See https://openrouter.ai/docs/provider-routing for the full schema.
+type providerSpec struct {
+	Only           []string `json:"only,omitempty"`
+	AllowFallbacks bool     `json:"allow_fallbacks"`
 }
 
 // chatResponse is the LLM API response.
 type chatResponse struct {
-	Choices []struct {
+	// Provider is OpenRouter-specific: the upstream backend that actually
+	// served the request (e.g., "Phala"). Empty for non-OpenRouter gateways.
+	Provider string `json:"provider,omitempty"`
+	Choices  []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
@@ -97,6 +122,9 @@ type GenerateResponse struct {
 	CompletionTokens int    // number of completion tokens
 	TotalTokens      int    // total token count
 	Model            string // model that generated the response
+	// Provider is the upstream backend reported by OpenRouter (e.g. "Phala").
+	// Empty for non-OpenRouter gateways or when the field is absent.
+	Provider string
 }
 
 // isRetryableStatus returns true for HTTP status codes worth retrying.
@@ -119,6 +147,12 @@ func (c *Client) Generate(messages []prompt.Message) (*GenerateResponse, error) 
 	}
 	if c.config.MaxTokens > 0 {
 		reqBody.MaxTokens = c.config.MaxTokens
+	}
+	if len(c.config.Provider) > 0 {
+		reqBody.Provider = &providerSpec{
+			Only:           append([]string(nil), c.config.Provider...),
+			AllowFallbacks: c.config.AllowFallbacks,
+		}
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -195,6 +229,7 @@ func (c *Client) Generate(messages []prompt.Message) (*GenerateResponse, error) 
 			CompletionTokens: chatResp.Usage.CompletionTokens,
 			TotalTokens:      chatResp.Usage.TotalTokens,
 			Model:            c.config.Model,
+			Provider:         chatResp.Provider,
 		}, nil
 	}
 

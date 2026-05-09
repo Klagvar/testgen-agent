@@ -36,6 +36,13 @@ type pipelineOpts struct {
 	Model             string
 	Temperature       float64 // negative = use backend default
 	Seed              int     // 0 = unset
+	// Provider pins LLM requests to the listed OpenRouter upstreams (e.g.
+	// ["Phala"]). Empty means automatic gateway routing. AllowFallbacks
+	// controls whether the gateway may step outside the list when all
+	// listed providers fail. Both are forwarded into llm.Config and only
+	// affect OpenRouter-compatible backends.
+	Provider          []string
+	AllowFallbacks    bool
 	DryRun            bool
 	NoValidate        bool
 	NoCoverage        bool
@@ -286,7 +293,8 @@ func processFile(f diff.FileDiff, opts pipelineOpts) *fileResult {
 		return res
 	}
 
-	cfg := buildLLMConfig(opts.APIKey, opts.BaseURL, opts.Model, opts.Temperature, opts.Seed)
+	cfg := buildLLMConfig(opts.APIKey, opts.BaseURL, opts.Model, opts.Temperature, opts.Seed,
+		opts.Provider, opts.AllowFallbacks)
 	if cfg.APIKey == "" && cfg.BaseURL == "https://api.openai.com/v1" {
 		fmt.Printf("     ⚠️  No API key. Use --api-key or TESTGEN_API_KEY env\n")
 		fmt.Printf("     💡 Or set --api-url for local model (Ollama)\n\n")

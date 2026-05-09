@@ -44,6 +44,8 @@ func main() {
 	model := flag.String("model", "", "LLM model (default: gpt-4o-mini)")
 	temperature := flag.Float64("temperature", -1, "LLM sampling temperature (negative = use backend default)")
 	seed := flag.Int("seed", 0, "LLM sampling seed for reproducibility (0 = unset)")
+	provider := flag.String("provider", "", "OpenRouter provider allowlist (comma-separated, e.g. \"Phala\" or \"Phala,DeepInfra\"). When set, requests are pinned to these upstreams; ignored by non-OpenRouter backends.")
+	allowFallbacks := flag.Bool("provider-allow-fallbacks", false, "Allow OpenRouter to fall back outside --provider allowlist when all listed providers fail. Default false (strict pin) for reproducibility.")
 	runIndex := flag.Int("run-index", 0, "1-based index of this run within a multi-run experiment (0 = single run)")
 	outDir := flag.String("out", "", "Output directory for tests (default: next to source)")
 	dryRun := flag.Bool("dry-run", false, "Preview prompt without calling LLM")
@@ -172,6 +174,8 @@ func main() {
 		Model:                    *model,
 		Temperature:              *temperature,
 		Seed:                     *seed,
+		Provider:                 splitProviderList(*provider),
+		AllowFallbacks:           *allowFallbacks,
 		DryRun:                   *dryRun,
 		NoValidate:               *noValidate,
 		NoCoverage:               *noCoverage,
@@ -423,6 +427,8 @@ func main() {
 			NaturalnessEnabled:        !*noNaturalness,
 			Temperature:               optionalTemperature(*temperature),
 			Seed:                      optionalSeed(*seed),
+			Provider:                  splitProviderList(*provider),
+			ProviderAllowFallbacks:    *allowFallbacks && *provider != "",
 			RunIndex:                  *runIndex,
 		},
 		}
@@ -772,7 +778,12 @@ func resolvePRNumber(flagVal int) int {
 }
 
 // buildLLMConfig builds the LLM client configuration from CLI flags and env.
-func buildLLMConfig(apiKey, baseURL, model string, temperature float64, seed int) llm.Config {
+// Provider is the parsed list of OpenRouter upstreams to pin requests to;
+// allowFallbacks controls whether the gateway may fall back outside of it.
+// Both are propagated only when the caller actually requested provider routing
+// (non-empty list) so that other OpenAI-compatible backends are unaffected.
+func buildLLMConfig(apiKey, baseURL, model string, temperature float64, seed int,
+	provider []string, allowFallbacks bool) llm.Config {
 	cfg := llm.DefaultConfig()
 
 	if apiKey != "" {
@@ -813,7 +824,40 @@ func buildLLMConfig(apiKey, baseURL, model string, temperature float64, seed int
 		}
 	}
 
+	// Provider: CLI takes priority; otherwise honour TESTGEN_PROVIDER env so
+	// run-model.sh can set it once and benchmark/ablate harnesses inherit it.
+	if len(provider) > 0 {
+		cfg.Provider = append([]string(nil), provider...)
+		cfg.AllowFallbacks = allowFallbacks
+	} else if envProv := os.Getenv("TESTGEN_PROVIDER"); envProv != "" {
+		cfg.Provider = splitProviderList(envProv)
+		if envFallback := os.Getenv("TESTGEN_PROVIDER_ALLOW_FALLBACKS"); envFallback == "1" || envFallback == "true" {
+			cfg.AllowFallbacks = true
+		}
+	}
+
 	return cfg
+}
+
+// splitProviderList parses a comma-separated provider allowlist, trimming
+// whitespace and dropping empty entries. Returns nil for empty input so that
+// downstream code can rely on len()==0 to mean "no pinning requested".
+func splitProviderList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // applyConfigDefaults applies values from .testgen.yml for CLI flags

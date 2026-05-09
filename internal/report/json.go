@@ -136,6 +136,17 @@ type JSONConfig struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	Seed        *int     `json:"seed,omitempty"`
 
+	// Provider is the OpenRouter "provider.only" allowlist that constrained
+	// upstream selection for this run. Empty means automatic routing. We
+	// log it so post-hoc analysis can attribute differences in metrics
+	// either to the model itself or to the underlying inference backend
+	// (Phala, AtlasCloud, Together, ...). Identical to a string slice so
+	// the aggregator can group runs by exact provider list.
+	Provider []string `json:"provider,omitempty"`
+	// ProviderAllowFallbacks records whether the gateway was permitted to
+	// step outside Provider. Logged only when Provider is non-empty.
+	ProviderAllowFallbacks bool `json:"provider_allow_fallbacks,omitempty"`
+
 	// RunIndex distinguishes repeated runs of the same configuration
 	// (1-based). Single-run experiments leave this at 0/omitted.
 	RunIndex int `json:"run_index,omitempty"`

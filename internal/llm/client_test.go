@@ -185,3 +185,95 @@ func TestGenerate_APIError(t *testing.T) {
 	}
 	t.Logf("Expected error: %v", err)
 }
+
+// TestGenerate_Provider_Omitted ensures that when Config.Provider is empty
+// the request body does not include a "provider" field at all (so that
+// non-OpenRouter gateways which would otherwise reject the field keep
+// working unchanged).
+func TestGenerate_Provider_Omitted(t *testing.T) {
+	var observed map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&observed)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL, Model: "test-model", Timeout: 10})
+	if _, err := client.Generate([]prompt.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, has := observed["provider"]; has {
+		t.Errorf("expected no \"provider\" field in body when Config.Provider is empty, got: %v", observed["provider"])
+	}
+}
+
+// TestGenerate_Provider_Pinned verifies the OpenRouter routing object is
+// serialized correctly and that the upstream provider name flows back into
+// GenerateResponse.Provider for downstream logging.
+func TestGenerate_Provider_Pinned(t *testing.T) {
+	var got chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"provider":"Phala","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:        server.URL,
+		Model:          "qwen/qwen-2.5-7b-instruct",
+		Timeout:        10,
+		Provider:       []string{"Phala"},
+		AllowFallbacks: false,
+	})
+	resp, err := client.Generate([]prompt.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if got.Provider == nil {
+		t.Fatal("expected provider object in request body")
+	}
+	if len(got.Provider.Only) != 1 || got.Provider.Only[0] != "Phala" {
+		t.Errorf("provider.only = %v, want [Phala]", got.Provider.Only)
+	}
+	if got.Provider.AllowFallbacks {
+		t.Errorf("provider.allow_fallbacks = true, want false (strict pin)")
+	}
+
+	if resp.Provider != "Phala" {
+		t.Errorf("response.Provider = %q, want %q", resp.Provider, "Phala")
+	}
+}
+
+// TestGenerate_Provider_AllowFallbacks ensures the fallback flag is forwarded
+// when the caller opts in (e.g. multi-provider pool with fallback).
+func TestGenerate_Provider_AllowFallbacks(t *testing.T) {
+	var got chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:        server.URL,
+		Model:          "test-model",
+		Timeout:        10,
+		Provider:       []string{"Phala", "Together"},
+		AllowFallbacks: true,
+	})
+	if _, err := client.Generate([]prompt.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got.Provider == nil || !got.Provider.AllowFallbacks {
+		t.Errorf("provider.allow_fallbacks = %v, want true", got.Provider)
+	}
+	if len(got.Provider.Only) != 2 {
+		t.Errorf("provider.only len = %d, want 2", len(got.Provider.Only))
+	}
+}
