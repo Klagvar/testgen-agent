@@ -55,7 +55,11 @@ func main() {
 	ghToken := flag.String("github-token", "", "GitHub token for PR comments (or GITHUB_TOKEN env)")
 	ghRepo := flag.String("github-repo", "", "GitHub repo (owner/repo)")
 	prNumber := flag.Int("pr-number", 0, "Pull request number for comment")
-	mutationTest := flag.Bool("mutation", false, "Run mutation testing after test generation")
+	// Mutation testing is enabled by default: it surfaces tests that compile
+	// and pass but fail to detect actual semantic changes (a typical failure
+	// mode of LLM-generated tests). Disable with --no-mutation when wall-clock
+	// is critical (mutations re-execute the test set per generated mutant).
+	mutationTest := flag.Bool("mutation", true, "Run mutation testing after test generation (default true)")
 	noCache := flag.Bool("no-cache", false, "Disable function-level caching")
 	noSmartDiff := flag.Bool("no-smart-diff", false, "Disable git-based function comparison")
 	raceDetection := flag.Bool("race", false, "Enable race detection for concurrent tests")

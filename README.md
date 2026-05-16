@@ -229,7 +229,7 @@ TESTGEN_PR_NUMBER=1
 | `--dry-run` | Показать промпт без вызова LLM | `false` |
 | `--no-validate` | Пропустить валидацию | `false` |
 | `--coverage` | Целевой diff coverage (%) | `80` |
-| `--mutation` | Запустить мутационное тестирование | `false` |
+| `--mutation` | Запустить мутационное тестирование | `true` |
 | `--race` | `go test -race` для concurrent-функций | `false` |
 | `--report` | `html` или `json` (пусто ⇒ только PR-комментарий) | пусто |
 | `--no-cache` | Отключить функциональный кэш | `false` |
@@ -238,7 +238,7 @@ TESTGEN_PR_NUMBER=1
 | `--no-structured-feedback` | Ablation: сырое stderr вместо `go test -json` | `false` |
 | `--no-pruning` | Ablation: не отбрасывать падающие тесты | `false` |
 | `--no-coverage` | Ablation: пропустить итеративный coverage-loop | `false` |
-| `--no-mutation` | Ablation: принудительно отключить мутации | `false` |
+| `--no-mutation` | Ablation: принудительно отключить мутации (переопределяет default `--mutation true`) | `false` |
 | `--no-naturalness` | Ablation: пропустить naturalness-метрики | `false` |
 | `--ablation-config` | Метка конфигурации в JSON-отчёте (`full`, `no-types`, …) | пусто |
 | `--github-token` | Токен для PR-комментария | — |
