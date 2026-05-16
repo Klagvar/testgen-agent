@@ -39,12 +39,20 @@ type Config struct {
 }
 
 // DefaultConfig returns the default configuration (OpenAI).
+//
+// MaxTokens is intentionally set high (16k) because some OpenRouter
+// providers — most notably Anthropic native — strictly enforce this
+// limit and silently truncate long responses, breaking AST-merge for
+// table-driven tests on large functions. Other providers (Bedrock,
+// Google AI Studio) treat it as a soft hint, so a generous default
+// is safe for them. See benchmark notes from 2026-05-16 for the
+// empirical evidence behind this choice.
 func DefaultConfig() Config {
 	return Config{
 		BaseURL:    "https://api.openai.com/v1",
 		Model:      "gpt-4o-mini",
 		Timeout:    300,
-		MaxTokens:  4096,
+		MaxTokens:  16384,
 		MaxRetries: 3,
 	}
 }
