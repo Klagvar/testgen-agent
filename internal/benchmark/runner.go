@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gizatulin/testgen-agent/internal/ablation"
+	"github.com/Klagvar/testgen-agent/internal/ablation"
 )
 
 // Options controls a benchmark sweep. Everything except AgentBin has a

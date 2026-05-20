@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/coverage"
+	"github.com/Klagvar/testgen-agent/internal/coverage"
 )
 
 func writeFile(t *testing.T, content string) string {

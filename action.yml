@@ -2,7 +2,7 @@
 # Подключается к любому Go-репозиторию как reusable action.
 name: 'Testgen Agent'
 description: 'AI-агент для автоматической генерации Go unit-тестов на основе diff изменений'
-author: 'gizatulin'
+author: 'Klagvar'
 
 inputs:
   api-key:

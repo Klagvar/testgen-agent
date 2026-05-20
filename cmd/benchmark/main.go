@@ -22,8 +22,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/ablation"
-	"github.com/gizatulin/testgen-agent/internal/benchmark"
+	"github.com/Klagvar/testgen-agent/internal/ablation"
+	"github.com/Klagvar/testgen-agent/internal/benchmark"
 )
 
 func main() {

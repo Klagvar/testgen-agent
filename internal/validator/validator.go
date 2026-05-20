@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gizatulin/testgen-agent/internal/testjson"
+	"github.com/Klagvar/testgen-agent/internal/testjson"
 )
 
 // Result holds the test validation outcome.

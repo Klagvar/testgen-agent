@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/report"
+	"github.com/Klagvar/testgen-agent/internal/report"
 )
 
 // writeReport serialises run as a testgen-report JSON and drops it into

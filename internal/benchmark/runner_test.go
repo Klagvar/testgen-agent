@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/ablation"
-	"github.com/gizatulin/testgen-agent/internal/report"
+	"github.com/Klagvar/testgen-agent/internal/ablation"
+	"github.com/Klagvar/testgen-agent/internal/report"
 )
 
 // TestRunAll_SkipClone exercises the benchmark runner end-to-end using a

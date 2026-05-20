@@ -18,7 +18,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/testjson"
+	"github.com/Klagvar/testgen-agent/internal/testjson"
 )
 
 // TestResult holds the result of a single test.

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gizatulin/testgen-agent/internal/prompt"
+	"github.com/Klagvar/testgen-agent/internal/prompt"
 )
 
 // Config holds LLM client settings.

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/prompt"
+	"github.com/Klagvar/testgen-agent/internal/prompt"
 )
 
 func TestCleanCodeResponse(t *testing.T) {

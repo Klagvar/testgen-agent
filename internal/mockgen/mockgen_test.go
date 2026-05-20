@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/analyzer"
+	"github.com/Klagvar/testgen-agent/internal/analyzer"
 )
 
 func TestGenerateMocks_Interface(t *testing.T) {

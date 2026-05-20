@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/report"
+	"github.com/Klagvar/testgen-agent/internal/report"
 )
 
 // TestRunner_HappyPath verifies that Runner.Run forwards flags to the

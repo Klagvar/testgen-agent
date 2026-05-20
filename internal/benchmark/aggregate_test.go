@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/report"
+	"github.com/Klagvar/testgen-agent/internal/report"
 )
 
 // writeRun serialises a JSONRun into <dir>/<repo>/<config>.json.

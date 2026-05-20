@@ -1,4 +1,4 @@
-module github.com/gizatulin/testgen-agent
+module github.com/Klagvar/testgen-agent
 
 go 1.26.1
 

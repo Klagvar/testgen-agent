@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gizatulin/testgen-agent/internal/analyzer"
+	"github.com/Klagvar/testgen-agent/internal/analyzer"
 )
 
 const cacheFileName = ".testgen-cache.json"

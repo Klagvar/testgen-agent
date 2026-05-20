@@ -9,8 +9,8 @@ import (
 	"go/token"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/analyzer"
-	"github.com/gizatulin/testgen-agent/internal/patterns"
+	"github.com/Klagvar/testgen-agent/internal/analyzer"
+	"github.com/Klagvar/testgen-agent/internal/patterns"
 )
 
 // ExtractFuncSource extracts specific functions by name from Go source code

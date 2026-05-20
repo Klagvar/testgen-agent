@@ -15,7 +15,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/analyzer"
+	"github.com/Klagvar/testgen-agent/internal/analyzer"
 )
 
 // CompareResult holds the comparison result of affected functions against the base branch.

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/report"
+	"github.com/Klagvar/testgen-agent/internal/report"
 )
 
 // Row is a single line in the aggregated ablation table. One Row per

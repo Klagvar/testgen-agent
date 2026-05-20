@@ -3,7 +3,7 @@ package patterns
 import (
 	"testing"
 
-	"github.com/gizatulin/testgen-agent/internal/analyzer"
+	"github.com/Klagvar/testgen-agent/internal/analyzer"
 )
 
 func TestDetectHTTPHandler_NetHTTP(t *testing.T) {

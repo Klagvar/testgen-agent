@@ -18,7 +18,7 @@ import (
 	"go/parser"
 	"go/token"
 
-	"github.com/gizatulin/testgen-agent/internal/coverage"
+	"github.com/Klagvar/testgen-agent/internal/coverage"
 )
 
 // Kind enumerates the syntactic kinds of branches recognised by the analyser.

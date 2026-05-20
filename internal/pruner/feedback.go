@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/testjson"
+	"github.com/Klagvar/testgen-agent/internal/testjson"
 )
 
 // TestFeedback holds a structured summary of a single test's failure.

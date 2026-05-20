@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/ablation"
-	"github.com/gizatulin/testgen-agent/internal/report"
+	"github.com/Klagvar/testgen-agent/internal/ablation"
+	"github.com/Klagvar/testgen-agent/internal/report"
 )
 
 // LoadedRepo bundles everything the aggregator needs to know about a

@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gizatulin/testgen-agent/internal/ablation"
+	"github.com/Klagvar/testgen-agent/internal/ablation"
 )
 
 func main() {
