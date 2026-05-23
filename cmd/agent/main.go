@@ -63,7 +63,7 @@ func main() {
 	noCache := flag.Bool("no-cache", false, "Disable function-level caching")
 	noSmartDiff := flag.Bool("no-smart-diff", false, "Disable git-based function comparison")
 	raceDetection := flag.Bool("race", false, "Enable race detection for concurrent tests")
-	reportFormat := flag.String("report", "", "Generate report: html, json (empty = no report)")
+	reportFormat := flag.String("report", "", "Generate report: html, json, html,json or all (empty = no report)")
 	testTimeout := flag.Int("test-timeout", 0, "Override per-package go test timeout (seconds; 0 = use config or default 300)")
 
 	// Ablation knobs — disable individual pipeline components so that
@@ -301,12 +301,27 @@ func main() {
 	}
 
 	// ─── Generate report ───
+	// reportFmt accepts a comma-separated list of formats (e.g. "html,json")
+	// or the alias "all" which is equivalent to "html,json".
 	reportFmt := *reportFormat
 	if reportFmt == "" && projectCfg.ReportFormat != "" && projectCfg.ReportFormat != "text" {
 		reportFmt = projectCfg.ReportFormat
 	}
+	wantHTML := false
+	wantJSON := false
+	for _, part := range strings.Split(reportFmt, ",") {
+		switch strings.TrimSpace(strings.ToLower(part)) {
+		case "html":
+			wantHTML = true
+		case "json":
+			wantJSON = true
+		case "all", "both":
+			wantHTML = true
+			wantJSON = true
+		}
+	}
 
-	if reportFmt == "html" {
+	if wantHTML {
 		modelName := *model
 		if modelName == "" {
 			modelName = "gpt-4o-mini"
@@ -356,7 +371,7 @@ func main() {
 		}
 	}
 
-	if reportFmt == "json" {
+	if wantJSON {
 		modelName := *model
 		if modelName == "" {
 			modelName = "gpt-4o-mini"
